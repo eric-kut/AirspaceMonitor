@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Signed release build for TrafficWatcher. Run from anywhere:
+# Signed release build for AirspaceMonitor. Run from anywhere:
 #   bash build-release.sh
 set -e
 cd "$(dirname "$0")"

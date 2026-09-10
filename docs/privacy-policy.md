@@ -1,8 +1,8 @@
-# TrafficWatcher — Privacy Policy
+# AirspaceMonitor — Privacy Policy
 
 _Last updated: 2026-09-08_
 
-TrafficWatcher is a free, offline-first airspace awareness tool for drone pilots. It monitors public ADS-B flight data and alerts you when aircraft enter zones you define. **The app has no accounts, no advertising, no analytics, and no tracking of any kind.**
+AirspaceMonitor is a free, offline-first airspace awareness tool for drone pilots. It monitors public ADS-B flight data and alerts you when aircraft enter zones you define. **The app has no accounts, no advertising, no analytics, and no tracking of any kind.**
 
 ## Data the app processes on your device
 

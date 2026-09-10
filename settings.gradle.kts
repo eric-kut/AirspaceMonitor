@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TrafficWatcher"
+rootProject.name = "AirspaceMonitor"
 include(":app")

@@ -1,4 +1,4 @@
-# TrafficWatcher
+# AirspaceMonitor
 
 Sideloaded situational-awareness app for recreational drone pilots in Canada.
 Polls free, keyless, crowdsourced ADS-B feeds, filters aircraft against a
@@ -47,17 +47,17 @@ Output: `app/build/outputs/apk/release/app-release.apk`
 
    ```bash
    keytool -genkeypair -v \
-     -keystore trafficwatcher.keystore \
-     -alias trafficwatcher \
+     -keystore airspacemonitor.keystore \
+     -alias airspacemonitor \
      -keyalg RSA -keysize 4096 -validity 10000
    ```
 
 2. Create `keystore.properties` in the project root:
 
    ```properties
-   storeFile=trafficwatcher.keystore
+   storeFile=airspacemonitor.keystore
    storePassword=YOUR_STORE_PASSWORD
-   keyAlias=trafficwatcher
+   keyAlias=airspacemonitor
    keyPassword=YOUR_KEY_PASSWORD
    ```
 
@@ -84,7 +84,7 @@ app) — direct `adb install` needs no such toggle.
 
 ## GrapheneOS runtime-permission checklist
 
-Do these after first launch (Settings → Apps → TrafficWatcher → Permissions,
+Do these after first launch (Settings → Apps → AirspaceMonitor → Permissions,
 or via the in-app prompts):
 
 | Permission | Required? | Notes |
@@ -95,7 +95,7 @@ or via the in-app prompts):
 | Microphone, Camera, Contacts, etc. | Never requested | The app uses none of them. |
 | Network sandbox (GrapheneOS) | Keep enabled | Needed to reach the ADS-B feeds, Open-Meteo, and OSM tiles. |
 
-Also note in GrapheneOS **Settings → Apps → TrafficWatcher**: the app has no
+Also note in GrapheneOS **Settings → Apps → AirspaceMonitor**: the app has no
 "Unrestricted" data access requirement — ordinary foreground access suffices
 because the foreground service holds a notification.
 
@@ -149,7 +149,7 @@ above terrain. Treat AGL figures as advisory.
 ## Project layout
 
 ```
-app/src/main/java/ca/trafficwatcher/
+app/src/main/java/ca/airspacemonitor/
   domain/    pure Kotlin: models, GeoMath (haversine/bearing/compass/PIP),
              Pipeline (geofence+altitude filter), AircraftTracker (alert FSM), Units
   data/      Room (profiles), SettingsStore (DataStore), AdsBClient (failover),

@@ -9,11 +9,11 @@ plugins {
 }
 
 android {
-    namespace = "ca.trafficwatcher"
+    namespace = "ca.airspacemonitor"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "ca.trafficwatcher"
+        applicationId = "ca.airspacemonitor"
         minSdk = 26
         targetSdk = 36
         versionCode = 9
