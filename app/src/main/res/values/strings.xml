@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TrafficWatcher</string>
+
+    <!-- Monitoring status notification -->
+    <string name="status_notification_title">Monitoring: %1$s</string>
+    <string name="status_notification_text">Last poll %1$s · %2$d aircraft tracked</string>
+    <string name="status_not_polled_yet">—</string>
+    <string name="action_stop">Stop</string>
+
+    <!-- Aircraft alert notification -->
+    <string name="alert_line_geo">%1$s %2$s from reference point</string>
+    <string name="alert_line_tier">Alert level: %1$s</string>
+    <string name="alert_line_area">Area: %1$s</string>
+    <string name="tier_watch">watch</string>
+    <string name="tier_warning">WARNING</string>
+    <string name="alert_line_alt_msl">Altitude (MSL): %1$s</string>
+    <string name="alert_line_alt_agl">Altitude (AGL, approx.): %1$s</string>
+    <string name="alert_line_gs">Ground speed: %1$s</string>
+    <string name="alert_line_track">Track: %1$.0f° %2$s</string>
+    <string name="alert_line_source">Source: %1$s</string>
+    <string name="alert_line_age">Feed data age: %1$d s</string>
+    <string name="action_map">Map</string>
+    <string name="action_fr24">FR24</string>
+    <string name="action_snooze">Snooze 5 min</string>
+
+    <!-- Cleared (departure chimes) -->
+    <string name="cleared_notification_title">Cleared: %1$s</string>
+    <string name="cleared_warning_text">%1$d aircraft left the warning zone</string>
+    <string name="cleared_watch_text">%1$d aircraft left the watch layer</string>
+</resources>
