@@ -247,9 +247,57 @@ class GeoMathTest {
     }
 
     @Test
-    fun `offset polygon returns null when offset exceeds the inradius`() {
-        // Square half-width ~1.95 km; 2 km offset collapses it.
-        assertEquals(null, GeoMath.offsetPolygon(offsetSquare, 2.0))
-        assertEquals(null, GeoMath.offsetPolygon(offsetSquare, 5.0))
+    fun `offset polygon large offset on a convex polygon still buffers`() {
+        // Convex polygons never collapse: even an offset bigger than the
+        // half-width (~1.95 km here) yields a valid grown polygon. The old
+        // centroid-based inradius guard wrongly rejected these with null.
+        val buffered = GeoMath.offsetPolygon(offsetSquare, 5.0)!!
+        offsetSquare.forEach { assertTrue(GeoMath.pointInPolygon(it, buffered)) }
+        val centroid = GeoPoint(45.42, -75.695)
+        // 3 km east: outside the original, inside the ~6.95 km buffered extent.
+        val mid = GeoMath.destinationPoint(centroid, 90.0, 3.0)
+        assertTrue(GeoMath.pointInPolygon(mid, buffered))
+        assertTrue(!GeoMath.pointInPolygon(mid, offsetSquare))
+        // 8 km east: past the buffered east edge -> outside.
+        val far = GeoMath.destinationPoint(centroid, 90.0, 8.0)
+        assertTrue(!GeoMath.pointInPolygon(far, buffered))
+    }
+
+    // ---- Offset polygon: concave shapes -------------------------------------
+
+    private val offsetConcaveU = listOf(
+        GeoPoint(45.00, -75.06),
+        GeoPoint(45.06, -75.06),
+        GeoPoint(45.06, -75.04),
+        GeoPoint(45.02, -75.04),
+        GeoPoint(45.02, -75.02),
+        GeoPoint(45.06, -75.02),
+        GeoPoint(45.06, -75.00),
+        GeoPoint(45.00, -75.00),
+    )
+
+    @Test
+    fun `offset polygon concave shape buffers outward and narrows the notch`() {
+        val buffered = GeoMath.offsetPolygon(offsetConcaveU, 0.4)!!
+        // The buffered result contains the whole original polygon.
+        offsetConcaveU.forEach { assertTrue(GeoMath.pointInPolygon(it, buffered)) }
+        // 0.2 km below the bottom edge: outside the original, inside the buffer.
+        val below = GeoPoint(44.9982, -75.03)
+        assertTrue(!GeoMath.pointInPolygon(below, offsetConcaveU))
+        assertTrue(GeoMath.pointInPolygon(below, buffered))
+        // Deep in the notch: outside the original and stays outside — the notch
+        // walls move in by 0.4 km each and the floor moves up by 0.4 km, but the
+        // point is ~1.1 km above the buffered floor, still in open notch space.
+        val inNotch = GeoPoint(45.05, -75.03)
+        assertTrue(!GeoMath.pointInPolygon(inNotch, offsetConcaveU))
+        assertTrue(!GeoMath.pointInPolygon(inNotch, buffered))
+    }
+
+    @Test
+    fun `offset polygon returns null when the offset swallows a concave feature`() {
+        // Notch ~1.57 km wide: a 1.0 km offset makes the two notch walls cross,
+        // which would invert the shape -> caller falls back to a circle.
+        assertEquals(null, GeoMath.offsetPolygon(offsetConcaveU, 1.0))
+        assertEquals(null, GeoMath.offsetPolygon(offsetConcaveU, 4.0))
     }
 }

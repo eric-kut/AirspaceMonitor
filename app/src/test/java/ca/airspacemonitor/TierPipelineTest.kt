@@ -286,6 +286,40 @@ class TierPipelineTest {
         assertTrue(r < bufferedRadius + 1.0)
     }
 
+    @Test
+    fun `offset watch over a small polygon warning buffers the polygon not a circle`() {
+        // 4 km N-S x 1 km E-W rectangle. The old guard nulled this buffer out
+        // (centroid-to-edge 0.5 km < 4 km offset) and fell back to a ~6.1 km
+        // bounding circle, alerting far outside the intended polygon band.
+        val rect = listOf(
+            GeoPoint(45.4035, -75.7035),
+            GeoPoint(45.4395, -75.7035),
+            GeoPoint(45.4395, -75.6909),
+            GeoPoint(45.4035, -75.6909),
+        )
+        val centroid = GeoPoint(45.4215, -75.6972)
+        val p = profile(offsetWatch(hKm = 4.0))
+            .copy(geofenceMode = GeofenceMode.POLYGON, polygon = rect, centerLat = null, centerLon = null)
+
+        // 5.5 km north: outside the warning rect but inside the buffered
+        // N-S extent (2 + 4 = 6 km) -> WATCH.
+        val north = GeoMath.destinationPoint(centroid, 0.0, 5.5)
+        val northResult = Pipeline.filter(
+            listOf(Aircraft(hex = "n", lat = north.lat, lon = north.lon, altBaroFt = 1000.0)),
+            p, centroid,
+        )
+        assertEquals(Tier.WATCH, northResult.matched.first().tier)
+
+        // 5.2 km east: past the buffered E-W extent (0.5 + 4 = 4.5 km) -> no
+        // match. The old circle fallback (~6.1 km) would have matched it.
+        val east = GeoMath.destinationPoint(centroid, 90.0, 5.2)
+        val eastResult = Pipeline.filter(
+            listOf(Aircraft(hex = "e", lat = east.lat, lon = east.lon, altBaroFt = 1000.0)),
+            p, centroid,
+        )
+        assertTrue(eastResult.matched.isEmpty())
+    }
+
     // ---- Query radius: must cover the watch layer, not just the warning zone ----
 
     @Test

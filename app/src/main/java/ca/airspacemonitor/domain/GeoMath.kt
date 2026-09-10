@@ -113,19 +113,35 @@ object GeoMath {
     private const val MITER_LIMIT = 2.0
 
     /**
-     * Outward buffer of [polygon] by [offsetKm]: per-edge normal offset with miter
-     * joins in a local equirectangular projection (km) around the vertex-mean
-     * centroid, consistent with the flat model used by [pointInPolygon]. Returns
-     * null when the result would be degenerate (offset >= polygon inradius) —
-     * callers should fall back to the bounding-circle behavior. offsetKm <= 0
-     * returns a copy of the input.
+     * Outward buffer of [polygon] by [offsetKm]: per-edge normal offset in a local
+     * equirectangular projection (km) around the vertex-mean centroid, consistent
+     * with the flat model used by [pointInPolygon]. Every corner joins at the
+     * intersection of the two offset edge lines: at reflex corners (notch bottom)
+     * that intersection is the exact buffer boundary; at convex corners it is the
+     * standard miter approximation of the round join, clamped to
+     * MITER_LIMIT * offset so sharp spikes stay bounded.
+     *
+     * Returns null when the result would be degenerate: a zero-area input, or an
+     * offset so large it swallows a concave feature (notch) or thin neck — detected
+     * as a self-intersection in the output. Convex polygons never degenerate, so
+     * they always buffer. Callers fall back to bounding-circle behavior on null.
+     * offsetKm <= 0 returns a copy of the input.
      */
     fun offsetPolygon(polygon: List<GeoPoint>, offsetKm: Double): List<GeoPoint>? {
         if (polygon.size < 3) return null
         if (offsetKm <= 1e-9) return polygon.toList()
 
-        val lat0 = polygon.sumOf { it.lat } / polygon.size
-        val lon0 = polygon.sumOf { it.lon } / polygon.size
+        // Collapse consecutive duplicates (double taps in the editor) — they have
+        // no direction, so edge normals would be NaN.
+        val cleaned = ArrayList<GeoPoint>(polygon.size)
+        for (p in polygon) {
+            val last = cleaned.lastOrNull()
+            if (last == null || haversineKm(last, p) > 1e-9) cleaned.add(p)
+        }
+        if (cleaned.size < 3) return null
+
+        val lat0 = cleaned.sumOf { it.lat } / cleaned.size
+        val lon0 = cleaned.sumOf { it.lon } / cleaned.size
         val cosLat0 = cos(Math.toRadians(lat0))
         val degToKmY = Math.PI / 180.0 * EARTH_RADIUS_KM
         val degToKmX = degToKmY * cosLat0
@@ -135,15 +151,9 @@ object GeoMath {
         fun toLon(x: Double) = lon0 + x / degToKmX
         fun toLat(y: Double) = lat0 + y / degToKmY
 
-        val xs = polygon.map { toX(it.lon) }
-        val ys = polygon.map { toY(it.lat) }
-        val n = polygon.size
-
-        // Degenerate guard: offset at least as large as the inradius collapses the shape.
-        val inradius = (0 until n).minOf {
-            pointToSegmentKm(0.0, 0.0, xs[it], ys[it], xs[(it + 1) % n], ys[(it + 1) % n])
-        }
-        if (offsetKm >= inradius) return null
+        val xs = cleaned.map { toX(it.lon) }
+        val ys = cleaned.map { toY(it.lat) }
+        val n = cleaned.size
 
         // Signed shoelace area: positive = counter-clockwise in the projected plane.
         var area2 = 0.0
@@ -151,6 +161,7 @@ object GeoMath {
             val j = (i + 1) % n
             area2 += xs[i] * ys[j] - xs[j] * ys[i]
         }
+        if (abs(area2) < 1e-12) return null
         val ccw = area2 > 0
 
         fun edgeNormal(i: Int): Pair<Double, Double> {
@@ -165,58 +176,99 @@ object GeoMath {
             return if (ccw) nx to ny else -nx to -ny
         }
 
-        val out = ArrayList<GeoPoint>(n)
+        val ox = ArrayList<Double>(n)
+        val oy = ArrayList<Double>(n)
         for (i in 0 until n) {
-            val prevVertex = i
-            val curVertex = (i + 1) % n
-            val (nx1, ny1) = edgeNormal(prevVertex)
+            val prevEdge = (i - 1 + n) % n
+            val curVertex = i
+            val nextVertex = (i + 1) % n
+            val (nx1, ny1) = edgeNormal(prevEdge)
             val (nx2, ny2) = edgeNormal(curVertex)
-            // Offset lines: p1 + t*d1 = p2 + s*d2, where each line passes through its
-            // edge offset by the normal.
-            val p1x = xs[prevVertex] + nx1 * offsetKm
-            val p1y = ys[prevVertex] + ny1 * offsetKm
-            val d1x = xs[curVertex] - xs[prevVertex]
-            val d1y = ys[curVertex] - ys[prevVertex]
-            val p2x = xs[curVertex] + nx2 * offsetKm
-            val p2y = ys[curVertex] + ny2 * offsetKm
-            val d2x = xs[(curVertex + 1) % n] - xs[curVertex]
-            val d2y = ys[(curVertex + 1) % n] - ys[curVertex]
-            val denom = d1x * d2y - d1y * d2x
-            val jx: Double
-            val jy: Double
-            if (abs(denom) < 1e-12) {
-                // Parallel consecutive edges (collinear vertex): just offset the vertex.
-                jx = xs[curVertex] + nx2 * offsetKm
-                jy = ys[curVertex] + ny2 * offsetKm
+            val d1x = xs[curVertex] - xs[prevEdge]
+            val d1y = ys[curVertex] - ys[prevEdge]
+            val d2x = xs[nextVertex] - xs[curVertex]
+            val d2y = ys[nextVertex] - ys[curVertex]
+            // Cross product of incoming and outgoing edge directions: sign tells
+            // convex vs reflex relative to the ring orientation.
+            val cross = d1x * d2y - d1y * d2x
+            val convex = if (ccw) cross > 1e-12 else cross < -1e-12
+            if (abs(cross) <= 1e-12) {
+                // Collinear vertex: single point offset along the shared normal.
+                ox.add(xs[curVertex] + nx2 * offsetKm)
+                oy.add(ys[curVertex] + ny2 * offsetKm)
             } else {
+                // Join at the intersection of the two offset edge lines. At a
+                // reflex corner this is the exact buffer boundary (no clamp); at a
+                // convex corner it is the miter approximation of the round join,
+                // clamped so sharp-angle spikes stay within MITER_LIMIT * offset.
+                val p1x = xs[prevEdge] + nx1 * offsetKm
+                val p1y = ys[prevEdge] + ny1 * offsetKm
+                val p2x = xs[curVertex] + nx2 * offsetKm
+                val p2y = ys[curVertex] + ny2 * offsetKm
+                val denom = d1x * d2y - d1y * d2x
                 val t = ((p2x - p1x) * d2y - (p2y - p1y) * d2x) / denom
                 var ix = p1x + t * d1x
                 var iy = p1y + t * d1y
-                // Clamp sharp-angle miters so spikes stay within MITER_LIMIT * offset.
-                val mx = ix - xs[curVertex]
-                val my = iy - ys[curVertex]
-                val mLen = sqrt(mx * mx + my * my)
-                val maxLen = MITER_LIMIT * offsetKm
-                if (mLen > maxLen) {
-                    ix = xs[curVertex] + mx / mLen * maxLen
-                    iy = ys[curVertex] + my / mLen * maxLen
+                if (convex) {
+                    val mx = ix - xs[curVertex]
+                    val my = iy - ys[curVertex]
+                    val mLen = sqrt(mx * mx + my * my)
+                    val maxLen = MITER_LIMIT * offsetKm
+                    if (mLen > maxLen) {
+                        ix = xs[curVertex] + mx / mLen * maxLen
+                        iy = ys[curVertex] + my / mLen * maxLen
+                    }
                 }
-                jx = ix
-                jy = iy
+                ox.add(ix)
+                oy.add(iy)
             }
-            out.add(GeoPoint(toLat(jy), toLon(jx)))
         }
-        return out
+
+        // Degeneracy check: a large offset can make opposite sides of a concavity
+        // or thin neck cross, inverting the shape. Reject self-intersecting
+        // results instead of guessing from the input alone (the old centroid
+        // "inradius" heuristic wrongly rejected small and concave polygons that
+        // buffer perfectly fine).
+        val m = ox.size
+        for (a in 0 until m) {
+            for (b in a + 2 until m) {
+                if (a == 0 && b == m - 1) continue // first and last edges share a vertex
+                if (segmentsIntersect(
+                        ox[a], oy[a], ox[(a + 1) % m], oy[(a + 1) % m],
+                        ox[b], oy[b], ox[(b + 1) % m], oy[(b + 1) % m],
+                    )
+                ) {
+                    return null
+                }
+            }
+        }
+
+        return List(m) { GeoPoint(toLat(oy[it]), toLon(ox[it])) }
     }
 
-    /** Distance from point (px, py) to segment (ax, ay)-(bx, by), projected-plane km. */
-    private fun pointToSegmentKm(px: Double, py: Double, ax: Double, ay: Double, bx: Double, by: Double): Double {
-        val dx = bx - ax
-        val dy = by - ay
-        val len2 = dx * dx + dy * dy
-        val t = if (len2 < 1e-12) 0.0 else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
-        val cx = ax + t * dx
-        val cy = ay + t * dy
-        return sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy))
+    /** True when segments (ax1,ay1)-(ax2,ay2) and (bx1,by1)-(bx2,by2) share any point. */
+    private fun segmentsIntersect(
+        ax1: Double, ay1: Double, ax2: Double, ay2: Double,
+        bx1: Double, by1: Double, bx2: Double, by2: Double,
+    ): Boolean {
+        fun orientation(px: Double, py: Double, qx: Double, qy: Double, rx: Double, ry: Double): Int {
+            val v = (qx - px) * (ry - py) - (qy - py) * (rx - px)
+            if (abs(v) < 1e-12) return 0
+            return if (v > 0) 1 else -1
+        }
+
+        fun onSegment(px: Double, py: Double, qx: Double, qy: Double, rx: Double, ry: Double) =
+            rx in minOf(px, qx)..maxOf(px, qx) && ry in minOf(py, qy)..maxOf(py, qy)
+
+        val o1 = orientation(ax1, ay1, ax2, ay2, bx1, by1)
+        val o2 = orientation(ax1, ay1, ax2, ay2, bx2, by2)
+        val o3 = orientation(bx1, by1, bx2, by2, ax1, ay1)
+        val o4 = orientation(bx1, by1, bx2, by2, ax2, ay2)
+        if (o1 != o2 && o3 != o4) return true
+        if (o1 == 0 && onSegment(ax1, ay1, ax2, ay2, bx1, by1)) return true
+        if (o2 == 0 && onSegment(ax1, ay1, ax2, ay2, bx2, by2)) return true
+        if (o3 == 0 && onSegment(bx1, by1, bx2, by2, ax1, ay1)) return true
+        if (o4 == 0 && onSegment(bx1, by1, bx2, by2, ax2, ay2)) return true
+        return false
     }
 }
