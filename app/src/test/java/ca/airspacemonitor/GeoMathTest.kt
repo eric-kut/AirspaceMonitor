@@ -195,4 +195,61 @@ class GeoMathTest {
         // Every vertex within the bounding circle
         polygon.forEach { assertTrue(GeoMath.haversineKm(centroid, it) <= radius + 1e-9) }
     }
+
+    // ---- Offset polygon (buffer) --------------------------------------------
+
+    private val offsetSquare = listOf(
+        GeoPoint(45.40, -75.72),
+        GeoPoint(45.44, -75.72),
+        GeoPoint(45.44, -75.67),
+        GeoPoint(45.40, -75.67),
+    )
+
+    @Test
+    fun `offset polygon grows each edge by the offset`() {
+        val centroid = GeoPoint(45.42, -75.695)
+        val buffered = GeoMath.offsetPolygon(offsetSquare, 1.0)!!
+        // 0.5 km outside the original east edge -> inside the buffered polygon,
+        // and outside the original (this is the watch band).
+        val nearEast = GeoMath.destinationPoint(centroid, 90.0, 2.45)
+        assertTrue(GeoMath.pointInPolygon(nearEast, buffered))
+        assertTrue(!GeoMath.pointInPolygon(nearEast, offsetSquare))
+        // 3 km east of the centroid: 1 km past the buffered east edge -> outside.
+        val farEast = GeoMath.destinationPoint(centroid, 90.0, 3.0)
+        assertTrue(!GeoMath.pointInPolygon(farEast, buffered))
+        // Buffered result contains the whole original polygon.
+        offsetSquare.forEach { assertTrue(GeoMath.pointInPolygon(it, buffered)) }
+    }
+
+    @Test
+    fun `offset polygon corner sits at the miter distance from the original corner`() {
+        val buffered = GeoMath.offsetPolygon(offsetSquare, 1.0)!!
+        // 90-degree corner: miter point is offset * sqrt(2) from the original corner.
+        val nearest = buffered.minOf { GeoMath.haversineKm(GeoPoint(45.44, -75.67), it) }
+        assertEquals(1.4142, nearest, 0.05)
+    }
+
+    @Test
+    fun `offset polygon handles clockwise winding`() {
+        val cw = offsetSquare.reversed()
+        val a = GeoMath.offsetPolygon(offsetSquare, 1.0)!!.sortedWith(compareBy({ it.lat }, { it.lon }))
+        val b = GeoMath.offsetPolygon(cw, 1.0)!!.sortedWith(compareBy({ it.lat }, { it.lon }))
+        assertEquals(a.size, b.size)
+        a.zip(b).forEach { (pa, pb) ->
+            assertEquals(pa.lat, pb.lat, 1e-6)
+            assertEquals(pa.lon, pb.lon, 1e-6)
+        }
+    }
+
+    @Test
+    fun `offset polygon zero offset returns the input`() {
+        assertEquals(offsetSquare, GeoMath.offsetPolygon(offsetSquare, 0.0))
+    }
+
+    @Test
+    fun `offset polygon returns null when offset exceeds the inradius`() {
+        // Square half-width ~1.95 km; 2 km offset collapses it.
+        assertEquals(null, GeoMath.offsetPolygon(offsetSquare, 2.0))
+        assertEquals(null, GeoMath.offsetPolygon(offsetSquare, 5.0))
+    }
 }

@@ -70,6 +70,10 @@ object Pipeline {
         var noAlt = 0
         var noTerrain = 0
 
+        // Buffered watch polygon for OFFSET layers over polygon warnings, computed
+        // once per poll (not per aircraft).
+        val offsetWatchPoly = bufferedOffsetPolygon(profile)
+
         for (ac in aircraft) {
             val lat = ac.lat
             val lon = ac.lon
@@ -89,7 +93,7 @@ object Pipeline {
 
             // 2. Optional watch layer: own shape + own ceiling -> advisory tier.
             val inWatch = !inWarning &&
-                watchPass(profile, reference, phoneReference, position, ac.altBaroFt, ac.altGeomFt)
+                watchPass(profile, reference, phoneReference, position, ac.altBaroFt, ac.altGeomFt, offsetWatchPoly)
 
             if (!inWarning && !inWatch) continue
             val tier = if (inWarning) Tier.WARNING else Tier.WATCH
@@ -137,9 +141,10 @@ object Pipeline {
 
     /**
      * True when the aircraft sits inside the optional watch layer (shape test)
-     * and below its ceiling. OFFSET layers wrap the warning zone: a circle
-     * around the same reference widened by [WatchVolume.offsetHkm], with the
-     * warning ceiling raised by [WatchVolume.offsetV].
+     * and below its ceiling. OFFSET layers wrap the warning zone: for polygon
+     * warnings, the polygon grown outward by [WatchVolume.offsetHkm]; for circle
+     * warnings, a circle around the same reference widened by [WatchVolume.offsetHkm].
+     * The warning ceiling is raised by [WatchVolume.offsetV].
      */
     private fun watchPass(
         profile: Profile,
@@ -148,12 +153,17 @@ object Pipeline {
         position: GeoPoint,
         altBaroFt: Double?,
         altGeomFt: Double?,
+        offsetWatchPoly: List<GeoPoint>? = null,
     ): Boolean {
         val watch = profile.watch ?: return false
         val inside = when (watch.mode) {
             WatchMode.OFFSET -> {
-                val radius = effectiveWarningRadiusKm(profile) + watch.offsetHkm
-                GeoMath.haversineKm(reference.lat, reference.lon, position.lat, position.lon) <= radius + 1e-9
+                if (offsetWatchPoly != null) {
+                    GeoMath.pointInPolygon(position, offsetWatchPoly)
+                } else {
+                    val radius = effectiveWarningRadiusKm(profile) + watch.offsetHkm
+                    GeoMath.haversineKm(reference.lat, reference.lon, position.lat, position.lon) <= radius + 1e-9
+                }
             }
             WatchMode.FOLLOW_PHONE -> {
                 val ref = phoneReference ?: return false
@@ -199,6 +209,19 @@ object Pipeline {
         }
 
     /**
+     * The OFFSET watch layer grown from a polygon warning zone, or null when not
+     * applicable (non-polygon warning, invalid polygon, or degenerate offset —
+     * in those cases the watch falls back to a circle).
+     */
+    private fun bufferedOffsetPolygon(profile: Profile): List<GeoPoint>? {
+        val watch = profile.watch ?: return null
+        if (watch.mode != WatchMode.OFFSET) return null
+        if (profile.geofenceMode != GeofenceMode.POLYGON) return null
+        val polygon = profile.polygon?.takeIf { it.size >= 3 } ?: return null
+        return GeoMath.offsetPolygon(polygon, watch.offsetHkm)
+    }
+
+    /**
      * Radius (km) the ADS-B query circle needs so both the warning zone AND the
      * optional watch layer fall inside the fetched area. If the query only
      * covered the warning zone, aircraft in the outer watch ring would never be
@@ -211,7 +234,17 @@ object Pipeline {
         var radiusKm = warningExtentKm
         profile.watch?.let { w ->
             when (w.mode) {
-                WatchMode.OFFSET -> radiusKm += w.offsetHkm
+                WatchMode.OFFSET -> {
+                    val buffered = bufferedOffsetPolygon(profile)
+                    radiusKm += when {
+                        buffered != null ->
+                            maxOf(
+                                0.0,
+                                GeoMath.polygonBoundingCircle(buffered).second * 1.10 - warningExtentKm,
+                            )
+                        else -> w.offsetHkm
+                    }
+                }
                 WatchMode.FOLLOW_PHONE, WatchMode.FIXED_CIRCLE, WatchMode.POLYGON -> {
                     val watchCenter: GeoPoint? = when (w.mode) {
                         WatchMode.FOLLOW_PHONE -> phoneFix

@@ -228,6 +228,64 @@ class TierPipelineTest {
         assertTrue(byHex["out"]?.let { true } != true)
     }
 
+    @Test
+    fun `offset watch over a polygon warning matches the buffered band`() {
+        // Square warning polygon ~1.95 km half-width east-west.
+        val poly = listOf(
+            GeoPoint(45.40, -75.72),
+            GeoPoint(45.44, -75.72),
+            GeoPoint(45.44, -75.67),
+            GeoPoint(45.40, -75.67),
+        )
+        val centroid = GeoPoint(poly.sumOf { it.lat } / poly.size, poly.sumOf { it.lon } / poly.size)
+        val p = profile(offsetWatch(hKm = 1.0))
+            .copy(geofenceMode = GeofenceMode.POLYGON, polygon = poly, centerLat = null, centerLon = null)
+        fun at(kmEast: Double) = GeoMath.destinationPoint(centroid, 90.0, kmEast)
+
+        // Inside the polygon -> WARNING (not WATCH).
+        val inside = at(0.5)
+        val inResult = Pipeline.filter(
+            listOf(Aircraft(hex = "in", lat = inside.lat, lon = inside.lon, altBaroFt = 1000.0)),
+            p, centroid,
+        )
+        assertEquals(Tier.WARNING, inResult.matched.first().tier)
+
+        // 2.5 km east: outside the polygon (1.95 km) but inside the buffered watch
+        // polygon (2.95 km) -> WATCH.
+        val band = at(2.5)
+        val bandResult = Pipeline.filter(
+            listOf(Aircraft(hex = "band", lat = band.lat, lon = band.lon, altBaroFt = 1000.0)),
+            p, centroid,
+        )
+        assertEquals(Tier.WATCH, bandResult.matched.first().tier)
+
+        // 4.5 km east: past the buffered edge -> not matched.
+        val outside = at(4.5)
+        val outResult = Pipeline.filter(
+            listOf(Aircraft(hex = "out", lat = outside.lat, lon = outside.lon, altBaroFt = 1000.0)),
+            p, centroid,
+        )
+        assertTrue(outResult.matched.isEmpty())
+    }
+
+    @Test
+    fun `query radius covers the buffered polygon watch layer`() {
+        val poly = listOf(
+            GeoPoint(45.40, -75.72),
+            GeoPoint(45.44, -75.72),
+            GeoPoint(45.44, -75.67),
+            GeoPoint(45.40, -75.67),
+        )
+        val centroid = GeoPoint(poly.sumOf { it.lat } / poly.size, poly.sumOf { it.lon } / poly.size)
+        val p = profile(offsetWatch(hKm = 1.0))
+            .copy(geofenceMode = GeofenceMode.POLYGON, polygon = poly, centerLat = null, centerLon = null)
+        val buffered = GeoMath.offsetPolygon(poly, 1.0)!!
+        val bufferedRadius = GeoMath.polygonBoundingCircle(buffered).second
+        val r = Pipeline.queryRadiusKm(p, centroid)
+        assertTrue(r >= bufferedRadius)
+        assertTrue(r < bufferedRadius + 1.0)
+    }
+
     // ---- Query radius: must cover the watch layer, not just the warning zone ----
 
     @Test

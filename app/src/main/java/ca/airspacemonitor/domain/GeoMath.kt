@@ -109,4 +109,114 @@ object GeoMath {
         val maxVertexKm = polygon.maxOf { haversineKm(centroid, it) }
         return centroid to maxVertexKm
     }
+
+    private const val MITER_LIMIT = 2.0
+
+    /**
+     * Outward buffer of [polygon] by [offsetKm]: per-edge normal offset with miter
+     * joins in a local equirectangular projection (km) around the vertex-mean
+     * centroid, consistent with the flat model used by [pointInPolygon]. Returns
+     * null when the result would be degenerate (offset >= polygon inradius) —
+     * callers should fall back to the bounding-circle behavior. offsetKm <= 0
+     * returns a copy of the input.
+     */
+    fun offsetPolygon(polygon: List<GeoPoint>, offsetKm: Double): List<GeoPoint>? {
+        if (polygon.size < 3) return null
+        if (offsetKm <= 1e-9) return polygon.toList()
+
+        val lat0 = polygon.sumOf { it.lat } / polygon.size
+        val lon0 = polygon.sumOf { it.lon } / polygon.size
+        val cosLat0 = cos(Math.toRadians(lat0))
+        val degToKmY = Math.PI / 180.0 * EARTH_RADIUS_KM
+        val degToKmX = degToKmY * cosLat0
+
+        fun toX(lon: Double) = (lon - lon0) * degToKmX
+        fun toY(lat: Double) = (lat - lat0) * degToKmY
+        fun toLon(x: Double) = lon0 + x / degToKmX
+        fun toLat(y: Double) = lat0 + y / degToKmY
+
+        val xs = polygon.map { toX(it.lon) }
+        val ys = polygon.map { toY(it.lat) }
+        val n = polygon.size
+
+        // Degenerate guard: offset at least as large as the inradius collapses the shape.
+        val inradius = (0 until n).minOf {
+            pointToSegmentKm(0.0, 0.0, xs[it], ys[it], xs[(it + 1) % n], ys[(it + 1) % n])
+        }
+        if (offsetKm >= inradius) return null
+
+        // Signed shoelace area: positive = counter-clockwise in the projected plane.
+        var area2 = 0.0
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            area2 += xs[i] * ys[j] - xs[j] * ys[i]
+        }
+        val ccw = area2 > 0
+
+        fun edgeNormal(i: Int): Pair<Double, Double> {
+            val a = i
+            val b = (i + 1) % n
+            val dx = xs[b] - xs[a]
+            val dy = ys[b] - ys[a]
+            val len = sqrt(dx * dx + dy * dy)
+            val nx = dy / len
+            val ny = -dx / len
+            // For CCW polygons (dy, -dx) points outward; flip for CW.
+            return if (ccw) nx to ny else -nx to -ny
+        }
+
+        val out = ArrayList<GeoPoint>(n)
+        for (i in 0 until n) {
+            val prevVertex = i
+            val curVertex = (i + 1) % n
+            val (nx1, ny1) = edgeNormal(prevVertex)
+            val (nx2, ny2) = edgeNormal(curVertex)
+            // Offset lines: p1 + t*d1 = p2 + s*d2, where each line passes through its
+            // edge offset by the normal.
+            val p1x = xs[prevVertex] + nx1 * offsetKm
+            val p1y = ys[prevVertex] + ny1 * offsetKm
+            val d1x = xs[curVertex] - xs[prevVertex]
+            val d1y = ys[curVertex] - ys[prevVertex]
+            val p2x = xs[curVertex] + nx2 * offsetKm
+            val p2y = ys[curVertex] + ny2 * offsetKm
+            val d2x = xs[(curVertex + 1) % n] - xs[curVertex]
+            val d2y = ys[(curVertex + 1) % n] - ys[curVertex]
+            val denom = d1x * d2y - d1y * d2x
+            val jx: Double
+            val jy: Double
+            if (abs(denom) < 1e-12) {
+                // Parallel consecutive edges (collinear vertex): just offset the vertex.
+                jx = xs[curVertex] + nx2 * offsetKm
+                jy = ys[curVertex] + ny2 * offsetKm
+            } else {
+                val t = ((p2x - p1x) * d2y - (p2y - p1y) * d2x) / denom
+                var ix = p1x + t * d1x
+                var iy = p1y + t * d1y
+                // Clamp sharp-angle miters so spikes stay within MITER_LIMIT * offset.
+                val mx = ix - xs[curVertex]
+                val my = iy - ys[curVertex]
+                val mLen = sqrt(mx * mx + my * my)
+                val maxLen = MITER_LIMIT * offsetKm
+                if (mLen > maxLen) {
+                    ix = xs[curVertex] + mx / mLen * maxLen
+                    iy = ys[curVertex] + my / mLen * maxLen
+                }
+                jx = ix
+                jy = iy
+            }
+            out.add(GeoPoint(toLat(jy), toLon(jx)))
+        }
+        return out
+    }
+
+    /** Distance from point (px, py) to segment (ax, ay)-(bx, by), projected-plane km. */
+    private fun pointToSegmentKm(px: Double, py: Double, ax: Double, ay: Double, bx: Double, by: Double): Double {
+        val dx = bx - ax
+        val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 < 1e-12) 0.0 else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
+        val cx = ax + t * dx
+        val cy = ay + t * dy
+        return sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy))
+    }
 }

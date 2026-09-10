@@ -325,13 +325,25 @@ private fun fencesFor(run: ProfileRun, phonePoint: GeoPoint?): List<FenceSpec> {
                 center?.let { FenceSpec.Circle(it, w.radiusKm, Tier.WATCH) }
             }
             WatchMode.FOLLOW_PHONE -> phonePoint?.let { FenceSpec.Circle(it, w.radiusKm, Tier.WATCH) }
-            WatchMode.OFFSET -> reference?.let {
-                val warningRadiusKm = when (profile.geofenceMode) {
-                    GeofenceMode.POLYGON ->
-                        profile.polygon?.takeIf { it.size >= 3 }?.let { GeoMath.polygonBoundingCircle(it).second }
-                    else -> profile.radiusKm
-                } ?: 0.0
-                FenceSpec.Circle(it, warningRadiusKm + w.offsetHkm, Tier.WATCH)
+            WatchMode.OFFSET -> {
+                val buffered = if (profile.geofenceMode == GeofenceMode.POLYGON) {
+                    profile.polygon?.takeIf { it.size >= 3 }
+                        ?.let { GeoMath.offsetPolygon(it, w.offsetHkm) }
+                } else {
+                    null
+                }
+                when {
+                    buffered != null -> FenceSpec.Poly(buffered, Tier.WATCH)
+                    else -> reference?.let {
+                        val warningRadiusKm = when (profile.geofenceMode) {
+                            GeofenceMode.POLYGON ->
+                                profile.polygon?.takeIf { it.size >= 3 }
+                                    ?.let { GeoMath.polygonBoundingCircle(it).second }
+                            else -> profile.radiusKm
+                        } ?: 0.0
+                        FenceSpec.Circle(it, warningRadiusKm + w.offsetHkm, Tier.WATCH)
+                    }
+                }
             }
         }
     }

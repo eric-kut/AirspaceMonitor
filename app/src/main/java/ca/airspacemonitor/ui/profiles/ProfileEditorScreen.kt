@@ -91,8 +91,18 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
         when (s.watchMode) {
             WatchMode.POLYGON -> if (s.watchPolygon.size >= 3) FenceSpec.Poly(s.watchPolygon, Tier.WATCH) else null
             WatchMode.FIXED_CIRCLE -> watchCenter?.let { FenceSpec.Circle(it, s.watchRadiusKm, Tier.WATCH) }
-            WatchMode.OFFSET -> (center ?: centroid)?.let {
-                FenceSpec.Circle(it, warningExtentKm + s.watchOffsetHkm, Tier.WATCH)
+            WatchMode.OFFSET -> {
+                val buffered = if (s.geofenceMode == GeofenceMode.POLYGON && s.polygon.size >= 3) {
+                    GeoMath.offsetPolygon(s.polygon, s.watchOffsetHkm)
+                } else {
+                    null
+                }
+                when {
+                    buffered != null -> FenceSpec.Poly(buffered, Tier.WATCH)
+                    else -> (center ?: centroid)?.let {
+                        FenceSpec.Circle(it, warningExtentKm + s.watchOffsetHkm, Tier.WATCH)
+                    }
+                }
             }
             WatchMode.FOLLOW_PHONE -> null
         }
