@@ -47,6 +47,16 @@ object GeoMath {
         return COMPASS_8[index]
     }
 
+    private val COMPASS_16 = arrayOf(
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+    )
+
+    fun compass16(bearingDeg: Double): String {
+        val normalized = ((bearingDeg % 360.0) + 360.0) % 360.0
+        val index = ((normalized + 11.25) / 22.5).toInt() % 16
+        return COMPASS_16[index]
+    }
+
     /**
      * Even-odd ray-casting point-in-polygon. Vertices must not cross the
      * antimeridian. Points lying exactly on an edge are counted as inside.

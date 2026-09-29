@@ -1,7 +1,9 @@
 package ca.airspacemonitor.ui.home
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -22,11 +24,13 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,16 +47,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import ca.airspacemonitor.AirspaceApp
 import ca.airspacemonitor.data.AltitudeUnit
+import ca.airspacemonitor.data.AppSettings
 import ca.airspacemonitor.data.DistanceUnit
+import ca.airspacemonitor.data.DisplayFormats
 import ca.airspacemonitor.domain.GeoMath
 import ca.airspacemonitor.domain.GeoPoint
 import ca.airspacemonitor.domain.GeofenceMode
+import ca.airspacemonitor.domain.MatchedAircraft
 import ca.airspacemonitor.domain.Tier
 import ca.airspacemonitor.domain.WatchMode
 import ca.airspacemonitor.domain.Units
@@ -60,9 +68,13 @@ import ca.airspacemonitor.service.ProfileRun
 import ca.airspacemonitor.ui.map.AircraftPin
 import ca.airspacemonitor.ui.map.FenceSpec
 import ca.airspacemonitor.ui.map.AirspaceMap
+import ca.airspacemonitor.ui.map.circlePoints
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** Last monitoring session the map auto-fitted for; survives tab switches (process lifetime). */
+private var lastAutoFitSession = -1
 
 @Composable
 fun HomeScreen() {
@@ -81,6 +93,10 @@ fun HomeScreen() {
     val phonePoint by vm.monitorState.phonePoint.collectAsState()
 
     var recenterTick by remember { mutableIntStateOf(0) }
+    var selectedHex by remember { mutableStateOf<String?>(null) }
+    // Stable lambda identity so the map's overlay effect doesn't restart on
+    // every recomposition.
+    val onAircraftTap: (AircraftPin) -> Unit = remember { { pin -> selectedHex = pin.hex } }
 
     // ---- Permissions ------------------------------------------------------
     var pendingStartProfileId by remember { mutableStateOf<Long?>(null) }
@@ -135,13 +151,15 @@ fun HomeScreen() {
     }
     val totalTracked = runList.sumOf { it.tracked.size }
 
-    // Recenter once when the first meaningful target appears (profiles load async).
     val mapTarget = firstMapTarget(runList)
-    var lastAutoTarget by remember { mutableStateOf<GeoPoint?>(null) }
-    LaunchedEffect(mapTarget) {
-        if (mapTarget != null && lastAutoTarget == null) {
+
+    // Auto-fit the map once per monitoring session (not on every tab return —
+    // the MapView itself is retained, so a re-fit would discard the user's zoom).
+    val sessionGeneration by vm.monitorState.sessionGeneration.collectAsState()
+    LaunchedEffect(sessionGeneration) {
+        if (sessionGeneration >= 0 && sessionGeneration != lastAutoFitSession) {
+            lastAutoFitSession = sessionGeneration
             recenterTick++
-            lastAutoTarget = mapTarget
         }
     }
 
@@ -174,7 +192,7 @@ fun HomeScreen() {
                     }
                     Spacer(Modifier.weight(1f))
                     IconButton(onClick = { recenterTick++ }) {
-                        Icon(Icons.Filled.GpsFixed, contentDescription = "Recenter map")
+                        Icon(Icons.Filled.GpsFixed, contentDescription = "Fit zones on map")
                     }
                     Icon(
                         if (android.os.Build.VERSION.SDK_INT < 33 ||
@@ -222,6 +240,23 @@ fun HomeScreen() {
                     acc + run.trails
                 }
                 val gpsRef = runList.firstOrNull { it.profile.geofenceMode == GeofenceMode.FOLLOW_PHONE }?.referencePoint
+                // Zone outlines only — the recenter action fits all running profiles.
+                val fitPoints = fences.flatMap { fence ->
+                    when (fence) {
+                        is FenceSpec.Circle ->
+                            circlePoints(fence.center, fence.radiusKm, 16).map {
+                                GeoPoint(it.latitude, it.longitude)
+                            }
+                        is FenceSpec.Poly -> fence.points
+                    }
+                }
+                val refLat = settings.voiceRefLat
+                val refLon = settings.voiceRefLon
+                val voiceRefPoint = if (settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.MAP_POINT &&
+                    refLat != null && refLon != null
+                ) {
+                    GeoPoint(refLat, refLon)
+                } else null
                 AirspaceMap(
                     modifier = Modifier.fillMaxSize(),
                     tileTemplate = settings.tileServerTemplate,
@@ -229,9 +264,17 @@ fun HomeScreen() {
                     aircraft = pins,
                     trails = trails,
                     gpsPoint = if (anyFollowPhone) (phonePoint ?: gpsRef) else null,
+                    refPoint = voiceRefPoint,
+                    // In "marked point" mode, long-press anywhere to place the voice reference.
+                    onMapLongPress = if (settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.MAP_POINT) {
+                        { p -> vm.setVoiceRefPoint(p.lat, p.lon) }
+                    } else null,
                     recenterRequest = recenterTick,
                     recenterPoint = mapTarget,
                     initialCenter = mapTarget,
+                    mapKey = "home",
+                    fitPoints = fitPoints,
+                    onAircraftTap = onAircraftTap,
                 )
             }
 
@@ -281,6 +324,102 @@ fun HomeScreen() {
                     icon = { Icon(Icons.Filled.Stop, contentDescription = null) },
                     text = { Text("Stop all") },
                 )
+            }
+        }
+    }
+
+    // Tap-on-aircraft detail sheet; auto-dismisses if the aircraft leaves all zones.
+    selectedHex?.let { hex ->
+        runList.asSequence()
+            .mapNotNull { run -> run.tracked.firstOrNull { it.aircraft.hex == hex } }
+            .firstOrNull()
+            ?.let { matched ->
+                AircraftDetailDialog(
+                    matched = matched,
+                    settings = settings,
+                    onDismiss = { selectedHex = null },
+                    onOpen = { url ->
+                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    },
+                )
+            }
+    }
+}
+
+@Composable
+private fun AircraftDetailDialog(
+    matched: MatchedAircraft,
+    settings: AppSettings,
+    onDismiss: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
+    val ac = matched.aircraft
+    val altUnit = settings.altitudeUnit
+    val distUnit = settings.distanceUnit
+    Dialog(onDismissRequest = onDismiss) {
+        Card {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    (ac.callsign ?: ac.hex.uppercase()) + (ac.type?.let { " ($it)" } ?: ""),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    if (matched.tier == Tier.WARNING) "WARNING tier" else "Watch tier",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (matched.tier == Tier.WARNING) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
+                ac.registration?.let { Text("Registration: $it", style = MaterialTheme.typography.bodySmall) }
+                Text("Hex: ${ac.hex.uppercase()}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Position: ${DisplayFormats.formatDistance(matched.distanceKm, distUnit)} ${matched.bearingCompass} of reference",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                matched.altMslFt?.let {
+                    Text("Altitude (MSL): ${DisplayFormats.formatAltitude(it, altUnit)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                matched.aglFt?.let {
+                    Text("Altitude (AGL, approx.): ${DisplayFormats.formatAltitude(it, altUnit)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                ac.groundSpeedKt?.let {
+                    Text("Ground speed: ${DisplayFormats.formatSpeed(it, distUnit)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                ac.verticalRateFpm?.let { fpm ->
+                    Text(
+                        "Vertical speed: " +
+                            DisplayFormats.verticalRatePhrase(fpm, altUnit).replaceFirstChar { it.uppercase() },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                ac.trackDeg?.let {
+                    Text("Track: ${Math.round(it)}° ${GeoMath.compass8(it)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                (ac.seenPosSec ?: ac.seenSec)?.let {
+                    Text("Feed data age: ${Math.round(it)} s", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text("Source: ${if (ac.mlat) "MLAT" else "ADS-B"}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ac.callsign?.let { callsign ->
+                        OutlinedButton(onClick = { onOpen("https://www.flightradar24.com/$callsign") }) {
+                            Text("Flightradar24")
+                        }
+                    }
+                    OutlinedButton(onClick = { onOpen("https://globe.adsbexchange.com/?icao=${ac.hex}") }) {
+                        Text("ADS-B Exchange")
+                    }
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
+                    Text("Close")
+                }
             }
         }
     }

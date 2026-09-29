@@ -95,6 +95,39 @@ class GeoMathTest {
         assertEquals("E", GeoMath.compass8(360.0 + 90.0))
     }
 
+    // ---- 16-point compass ---------------------------------------------------
+
+    @Test
+    fun `compass16 covers all sixteen points`() {
+        assertEquals("N", GeoMath.compass16(0.0))
+        assertEquals("N", GeoMath.compass16(360.0))
+        assertEquals("NNE", GeoMath.compass16(22.5))
+        assertEquals("NE", GeoMath.compass16(45.0))
+        assertEquals("ENE", GeoMath.compass16(67.5))
+        assertEquals("E", GeoMath.compass16(90.0))
+        assertEquals("ESE", GeoMath.compass16(112.5))
+        assertEquals("SE", GeoMath.compass16(135.0))
+        assertEquals("SSE", GeoMath.compass16(157.5))
+        assertEquals("S", GeoMath.compass16(180.0))
+        assertEquals("SSW", GeoMath.compass16(202.5))
+        assertEquals("SW", GeoMath.compass16(225.0))
+        assertEquals("WSW", GeoMath.compass16(247.5))
+        assertEquals("W", GeoMath.compass16(270.0))
+        assertEquals("WNW", GeoMath.compass16(292.5))
+        assertEquals("NW", GeoMath.compass16(315.0))
+        assertEquals("NNW", GeoMath.compass16(337.5))
+    }
+
+    @Test
+    fun `compass16 wraps negative and large bearings`() {
+        assertEquals("N", GeoMath.compass16(-0.0))
+        assertEquals("NNW", GeoMath.compass16(-11.25 - 0.01))
+        assertEquals("N", GeoMath.compass16(-11.25 + 0.01))
+        assertEquals("NNE", GeoMath.compass16(360.0 + 22.5))
+        // 350.7° sits inside the N sector (348.75..360/0..11.25).
+        assertEquals("N", GeoMath.compass16(350.7))
+    }
+
     // ---- Point in polygon --------------------------------------------------
 
     private val square = listOf(

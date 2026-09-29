@@ -2,6 +2,7 @@ package ca.airspacemonitor.ui.profiles
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ca.airspacemonitor.data.AppSettings
 import ca.airspacemonitor.di.AppContainer
 import ca.airspacemonitor.domain.Profile
 import kotlinx.coroutines.flow.SharingStarted
@@ -14,6 +15,10 @@ class ProfilesViewModel(private val container: AppContainer) : ViewModel() {
     val profiles: StateFlow<List<Profile>> =
         container.profileRepository.profiles
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val settings: StateFlow<ca.airspacemonitor.data.AppSettings> =
+        container.settingsStore.settings
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppSettings())
 
     fun duplicate(id: Long) = viewModelScope.launch { container.profileRepository.duplicate(id) }
 

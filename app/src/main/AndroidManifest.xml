@@ -14,6 +14,19 @@
         android:name="android.hardware.location.gps"
         android:required="false" />
 
+    <!-- Android 11+ package visibility: without these, the app cannot see (and
+         therefore cannot use) third-party TTS engines or the browser. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AirspaceApp"
         android:allowBackup="false"

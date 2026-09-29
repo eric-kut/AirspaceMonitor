@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Bundle
@@ -83,6 +84,17 @@ private class TemplateTileSource(
 private fun tileSource(template: String) =
     if (template.isBlank()) TileSourceFactory.MAPNIK else TemplateTileSource("custom", template.trim())
 
+/**
+ * Camera state (center + zoom) keyed by [AirspaceMap.mapKey], surviving the
+ * composable leaving composition (tab switches). The MapView object itself is
+ * NOT retained: osmdroid tears it down when it leaves the window hierarchy
+ * (MapViewRepository.onDetach nulls its MapView), and reusing such an instance
+ * crashes overlay construction with an NPE.
+ */
+private data class MapCamera(val center: GeoPoint?, val zoom: Double)
+
+private val mapCamerasByKey = HashMap<String, MapCamera>()
+
 @Composable
 fun AirspaceMap(
     modifier: Modifier = Modifier,
@@ -91,6 +103,8 @@ fun AirspaceMap(
     aircraft: List<AircraftPin> = emptyList(),
     trails: Map<String, List<GeoPoint>> = emptyMap(),
     gpsPoint: GeoPoint? = null,
+    /** Voice-reference marker (the "marked point" announcement setting). */
+    refPoint: GeoPoint? = null,
     /** Polygon editor vertices (draggable-look markers; deletion is long-press). */
     vertices: List<GeoPoint> = emptyList(),
     onMapTap: ((GeoPoint) -> Unit)? = null,
@@ -100,6 +114,12 @@ fun AirspaceMap(
     recenterPoint: GeoPoint? = null,
     initialCenter: GeoPoint? = null,
     initialZoom: Double = 14.5,
+    /** Retain this map (zoom/pan) across composable disposal, keyed per screen. */
+    mapKey: String? = null,
+    /** When non-empty, a recenter request zooms to fit these points instead of [recenterPoint]. */
+    fitPoints: List<GeoPoint> = emptyList(),
+    /** Invoked when the user taps an aircraft pin. */
+    onAircraftTap: ((AircraftPin) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -109,13 +129,19 @@ fun AirspaceMap(
         creationCenter.value = initialCenter
     }
 
-    val mapView = remember {
+    val mapView = remember(mapKey) {
         MapView(context).apply {
             setTileSource(tileSource(tileTemplate))
             setMultiTouchControls(true)
             isTilesScaledToDpi = true
-            creationCenter.value?.let { controller.setCenter(OsmGeoPoint(it.lat, it.lon)) }
-            controller.setZoom(initialZoom)
+            val saved = mapKey?.let { mapCamerasByKey[it] }
+            if (saved != null) {
+                saved.center?.let { controller.setCenter(OsmGeoPoint(it.lat, it.lon)) }
+                controller.setZoom(saved.zoom)
+            } else {
+                creationCenter.value?.let { controller.setCenter(OsmGeoPoint(it.lat, it.lon)) }
+                controller.setZoom(initialZoom)
+            }
         }
     }
 
@@ -132,6 +158,16 @@ fun AirspaceMap(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.onPause()
+            // Remember where the user left the map so the next composition
+            // restores pan/zoom instead of snapping back to defaults. Skip
+            // before-layout disposals: the camera would still be the (0,0)
+            // default and would poison the restore.
+            if (mapKey != null && mapView.width > 0 && mapView.height > 0) {
+                mapCamerasByKey[mapKey] = MapCamera(
+                    center = GeoPoint(mapView.mapCenter.latitude, mapView.mapCenter.longitude),
+                    zoom = mapView.zoomLevelDouble,
+                )
+            }
             mapView.onDetach()
         }
     }
@@ -140,7 +176,7 @@ fun AirspaceMap(
         mapView.setTileSource(tileSource(tileTemplate))
     }
 
-    LaunchedEffect(fences, aircraft, trails, gpsPoint, vertices, onMapTap, onMapLongPress) {
+    LaunchedEffect(fences, aircraft, trails, gpsPoint, refPoint, vertices, onMapTap, onMapLongPress, onAircraftTap) {
         val overlays = mapView.overlayManager
         overlays.clear()
         fences.forEach { overlays.add(fenceOverlay(context, mapView, it)) }
@@ -148,6 +184,7 @@ fun AirspaceMap(
             if (points.size >= 2) overlays.add(trailOverlay(points))
         }
         gpsPoint?.let { overlays.add(gpsMarker(context, mapView, it)) }
+        refPoint?.let { overlays.add(refMarker(context, mapView, it)) }
         vertices.forEach { v ->
             overlays.add(
                 Marker(mapView).apply {
@@ -163,10 +200,15 @@ fun AirspaceMap(
                 Marker(mapView).apply {
                     position = OsmGeoPoint(pin.position.lat, pin.position.lon)
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    // The plane is already rotated inside the icon bitmap; setting
+                    // Marker.rotation would rotate the bitmap again and tilt the label.
                     icon = BitmapDrawable(mapView.resources, aircraftIcon(context, pin))
-                    pin.trackDeg?.let { rotation = it.toFloat() }
                     pin.callsign?.let { title = it }
                     pin.label?.let { subDescription = it }
+                    setOnMarkerClickListener { _, _ ->
+                        onAircraftTap?.invoke(pin)
+                        true
+                    }
                 },
             )
         }
@@ -186,9 +228,17 @@ fun AirspaceMap(
         mapView.invalidate()
     }
 
+    // Only act on *changes* — the effect also fires on first composition, and
+    // re-fitting there would discard the user's pan/zoom on every tab return.
+    val handledRequest = remember { mutableStateOf<Any?>(recenterRequest) }
     LaunchedEffect(recenterRequest) {
-        recenterPoint?.let { target ->
-            mapView.controller.animateTo(OsmGeoPoint(target.lat, target.lon))
+        if (recenterRequest == handledRequest.value) return@LaunchedEffect
+        handledRequest.value = recenterRequest
+        when {
+            fitPoints.isNotEmpty() ->
+                mapView.zoomToBoundingBox(fitBoundingBox(fitPoints), true)
+            recenterPoint != null ->
+                mapView.controller.animateTo(OsmGeoPoint(recenterPoint.lat, recenterPoint.lon))
         }
     }
 
@@ -214,6 +264,23 @@ fun AirspaceMap(
             )
         }
     }
+}
+
+/** Bounding box around the given points, padded so a tight zone doesn't hug the screen edge. */
+private fun fitBoundingBox(points: List<GeoPoint>): org.osmdroid.util.BoundingBox {
+    var minLat = 90.0
+    var maxLat = -90.0
+    var minLon = 180.0
+    var maxLon = -180.0
+    for (p in points) {
+        minLat = minOf(minLat, p.lat)
+        maxLat = maxOf(maxLat, p.lat)
+        minLon = minOf(minLon, p.lon)
+        maxLon = maxOf(maxLon, p.lon)
+    }
+    val latPad = (maxLat - minLat).coerceAtLeast(0.01) * 0.25 + 0.01
+    val lonPad = (maxLon - minLon).coerceAtLeast(0.01) * 0.25 + 0.01
+    return org.osmdroid.util.BoundingBox(maxLat + latPad, maxLon + lonPad, minLat - latPad, minLon - lonPad)
 }
 
 private fun fenceOverlay(context: Context, mapView: MapView, fence: FenceSpec): Polygon =
@@ -262,6 +329,14 @@ private fun gpsMarker(context: Context, mapView: MapView, point: GeoPoint): Mark
         title = "You (last GPS fix)"
     }
 
+private fun refMarker(context: Context, mapView: MapView, point: GeoPoint): Marker =
+    Marker(mapView).apply {
+        position = OsmGeoPoint(point.lat, point.lon)
+        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+        icon = ContextCompat.getDrawable(context, R.drawable.ic_vertex)
+        title = "Voice reference point"
+    }
+
 private fun aircraftIcon(context: Context, pin: AircraftPin): Bitmap {
     val density = context.resources.displayMetrics.density
     val planeSizePx = (34 * density).toInt().coerceAtLeast(34)
@@ -279,14 +354,25 @@ private fun aircraftIcon(context: Context, pin: AircraftPin): Bitmap {
     val label = pin.label ?: ""
     val textWidth = if (label.isEmpty()) 0f else labelPaint.measureText(label)
     val width = maxOf(planeSizePx, textWidth.toInt() + (8 * density).toInt())
-    val height = planeSizePx + (label.takeIf { it.isNotEmpty() }?.let { (20 * density).toInt() } ?: 0)
+    val height = planeSizePx + (label.takeIf { it.isNotEmpty() }?.let { (22 * density).toInt() } ?: 0)
 
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val planeLeft = (width - planeSizePx) / 2f
     canvas.drawBitmap(plane, planeLeft, 0f, null)
     if (label.isNotEmpty()) {
-        canvas.drawText(label, width / 2f, height - 4f * density, labelPaint)
+        // Backing pill keeps the label legible when it overlaps another pin's label.
+        val pad = 3 * density
+        val bg = RectF(
+            width / 2f - textWidth / 2f - pad,
+            planeSizePx + 2 * density,
+            width / 2f + textWidth / 2f + pad,
+            planeSizePx + 18 * density,
+        )
+        canvas.drawRoundRect(bg, 4 * density, 4 * density, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xE6FFFFFF.toInt()
+        })
+        canvas.drawText(label, width / 2f, height - 6f * density, labelPaint)
     }
     return bitmap
 }

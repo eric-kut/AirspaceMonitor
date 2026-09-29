@@ -74,22 +74,40 @@ fun SettingsScreen() {
                     "Tried top-to-bottom; after 3 consecutive failures the next host is used.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val hostTests by vm.hostTests.collectAsState()
+                val testingHosts by vm.testingHosts.collectAsState()
                 settings.hosts.forEachIndexed { index, host ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("${index + 1}. $host", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { vm.moveHostUp(index) }, enabled = index > 0) {
-                            Icon(Icons.Filled.ArrowUpward, contentDescription = "Move up")
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${index + 1}. $host", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { vm.moveHostUp(index) }, enabled = index > 0) {
+                                Icon(Icons.Filled.ArrowUpward, contentDescription = "Move up")
+                            }
+                            IconButton(
+                                onClick = { vm.moveHostDown(index) },
+                                enabled = index < settings.hosts.size - 1,
+                            ) {
+                                Icon(Icons.Filled.ArrowDownward, contentDescription = "Move down")
+                            }
+                            IconButton(onClick = { vm.removeHost(index) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Remove")
+                            }
                         }
-                        IconButton(
-                            onClick = { vm.moveHostDown(index) },
-                            enabled = index < settings.hosts.size - 1,
-                        ) {
-                            Icon(Icons.Filled.ArrowDownward, contentDescription = "Move down")
-                        }
-                        IconButton(onClick = { vm.removeHost(index) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Remove")
+                        hostTests[index]?.let { result ->
+                            Text(
+                                (if (result.ok) "✓ " else "✗ ") + result.message,
+                                color = if (result.ok) {
+                                    androidx.compose.ui.graphics.Color(0xFF2E7D32)
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
+                }
+                OutlinedButton(onClick = vm::testHosts, enabled = !testingHosts) {
+                    Text(if (testingHosts) "Testing hosts…" else "Test hosts")
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
@@ -140,6 +158,57 @@ fun SettingsScreen() {
                         selected = settings.altitudeUnit == AltitudeUnit.M,
                         onClick = { vm.setAltitudeUnit(AltitudeUnit.M) },
                         label = { Text("meters") },
+                    )
+                }
+            }
+        }
+
+        // ---- Voice reference point -----------------------------------------
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Voice reference point", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Where spoken distances are measured from: \"1.5 kilometers south west from you\".",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.PHONE,
+                        onClick = { vm.setVoiceRefMode(ca.airspacemonitor.data.VoiceRefMode.PHONE) },
+                        label = { Text("Phone location") },
+                    )
+                    FilterChip(
+                        selected = settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.MAP_POINT,
+                        onClick = { vm.setVoiceRefMode(ca.airspacemonitor.data.VoiceRefMode.MAP_POINT) },
+                        label = { Text("Marked point") },
+                    )
+                    FilterChip(
+                        selected = settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.CENTROID,
+                        onClick = { vm.setVoiceRefMode(ca.airspacemonitor.data.VoiceRefMode.CENTROID) },
+                        label = { Text("Zone center") },
+                    )
+                }
+                if (settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.MAP_POINT) {
+                    val lat = settings.voiceRefLat
+                    val lon = settings.voiceRefLon
+                    if (lat != null && lon != null) {
+                        Text(
+                            "Marked: %.5f, %.5f — long-press the map on the Home tab to move it."
+                                .format(lat, lon),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        Text(
+                            "No point marked yet — long-press the map on the Home tab to place it.",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                if (settings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.CENTROID) {
+                    Text(
+                        "Distances are measured from the center of each monitored zone.",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }

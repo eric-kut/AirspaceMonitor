@@ -37,6 +37,10 @@ class HomeViewModel(
 
     fun stopAll() = MonitoringService.stop(appContext)
 
+    fun setVoiceRefPoint(lat: Double, lon: Double) = viewModelScope.launch {
+        container.settingsStore.setVoiceRefPoint(lat, lon)
+    }
+
     fun acknowledgeDisclaimer() = viewModelScope.launch {
         container.settingsStore.setDisclaimerAcknowledged(true)
     }

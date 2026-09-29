@@ -2,7 +2,6 @@ package ca.airspacemonitor
 
 import ca.airspacemonitor.domain.Aircraft
 import ca.airspacemonitor.domain.CeilingRef
-import ca.airspacemonitor.domain.CeilingUnit
 import ca.airspacemonitor.domain.GeoMath
 import ca.airspacemonitor.domain.GeoPoint
 import ca.airspacemonitor.domain.GeofenceMode
@@ -32,7 +31,6 @@ class TierPipelineTest {
         centerLon = center.lon,
         radiusKm = radiusKm,
         ceilingValue = ceilingFt,
-        ceilingUnit = CeilingUnit.FT,
         ceilingRef = CeilingRef.AGL,
         terrainElevM = 0.0,
         watch = watch,
@@ -42,7 +40,6 @@ class TierPipelineTest {
         mode = WatchMode.OFFSET,
         offsetHkm = hKm,
         offsetV = vFt,
-        offsetVUnit = CeilingUnit.FT,
     )
 
     private fun aircraftAt(kmFromCenter: Double, altFt: Double): Aircraft {
@@ -98,9 +95,9 @@ class TierPipelineTest {
     }
 
     @Test
-    fun `offset vertical margin converts meters to feet`() {
-        // 100 m offset = ~328 ft; watch ceiling = 1500 + 328 = 1828 ft.
-        val w = WatchVolume(mode = WatchMode.OFFSET, offsetHkm = 5.0, offsetV = 100.0, offsetVUnit = CeilingUnit.M)
+    fun `offset vertical margin raises the watch ceiling`() {
+        // 328 ft offset (~100 m); watch ceiling = 1500 + 328 = 1828 ft.
+        val w = WatchVolume(mode = WatchMode.OFFSET, offsetHkm = 5.0, offsetV = 328.0)
         val inside = Pipeline.filter(listOf(aircraftAt(2.0, 1550.0)), profile(w), center)
         assertEquals(Tier.WATCH, inside.matched.first().tier)
         val above = Pipeline.filter(listOf(aircraftAt(2.0, 1900.0)), profile(w), center)
@@ -115,7 +112,7 @@ class TierPipelineTest {
                 mode = WatchMode.FOLLOW_PHONE,
                 radiusKm = 3.0,
                 ceilingValue = 1500.0,
-                ceilingUnit = CeilingUnit.FT,
+
                 ceilingRef = CeilingRef.AGL,
             ),
         )
@@ -148,7 +145,7 @@ class TierPipelineTest {
                 mode = WatchMode.FOLLOW_PHONE,
                 radiusKm = 3.0,
                 ceilingValue = 1500.0,
-                ceilingUnit = CeilingUnit.FT,
+
                 ceilingRef = CeilingRef.AGL,
             ),
         )
@@ -171,7 +168,7 @@ class TierPipelineTest {
                 mode = WatchMode.POLYGON,
                 polygon = poly,
                 ceilingValue = 1500.0,
-                ceilingUnit = CeilingUnit.FT,
+
                 ceilingRef = CeilingRef.AGL,
             ),
             radiusKm = 3.0,
@@ -341,7 +338,7 @@ class TierPipelineTest {
                 centerLat = watchCenter.lat,
                 centerLon = watchCenter.lon,
                 ceilingValue = 1500.0,
-                ceilingUnit = CeilingUnit.FT,
+
                 ceilingRef = CeilingRef.AGL,
             ),
         )
@@ -356,7 +353,7 @@ class TierPipelineTest {
                 mode = WatchMode.FOLLOW_PHONE,
                 radiusKm = 4.0,
                 ceilingValue = 1500.0,
-                ceilingUnit = CeilingUnit.FT,
+
                 ceilingRef = CeilingRef.AGL,
             ),
         )

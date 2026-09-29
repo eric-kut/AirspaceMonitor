@@ -23,6 +23,7 @@ class TestInjector {
         val distanceKm: Double = 2.0,
         val bearingDeg: Double = 45.0,
         val groundSpeedKt: Double = 110.0,
+        val verticalRateFpm: Double? = null,
         val trackDeg: Double = 225.0,
         val untilMs: Long = 0L,
     )
@@ -60,6 +61,7 @@ class TestInjector {
             lon = position.lon,
             altBaroFt = s.altitudeFt,
             altGeomFt = null,
+            verticalRateFpm = s.verticalRateFpm,
             groundSpeedKt = s.groundSpeedKt,
             trackDeg = s.trackDeg,
             mlat = false,

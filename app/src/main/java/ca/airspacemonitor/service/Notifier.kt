@@ -17,7 +17,6 @@ import ca.airspacemonitor.domain.CeilingRef
 import ca.airspacemonitor.domain.MatchedAircraft
 import ca.airspacemonitor.domain.Profile
 import ca.airspacemonitor.domain.Tier
-import ca.airspacemonitor.domain.Units
 
 /** Builds all notifications and channels. Everything is local — no GMS/FCM anywhere. */
 class Notifier(private val context: Context) {
@@ -26,12 +25,16 @@ class Notifier(private val context: Context) {
 
     companion object {
         const val CHANNEL_STATUS = "monitoring_status"
-        const val CHANNEL_CLEAR_WATCH = "clear_watch"
-        const val CHANNEL_CLEAR_WARNING = "clear_warning"
+        const val CHANNEL_VOICE_STATUS = "voice_status"
+        private const val LEGACY_CHANNEL_CLEAR_WATCH = "clear_watch"
+        private const val LEGACY_CHANNEL_CLEAR_WARNING = "clear_warning"
         const val WATCH_CHANNEL_PREFIX = "alerts_watch_"
         const val WARNING_CHANNEL_PREFIX = "alerts_warning_"
+        const val CLEAR_WATCH_CHANNEL_PREFIX = "clears_watch_"
+        const val CLEAR_WARNING_CHANNEL_PREFIX = "clears_warning_"
 
         const val NOTIF_ID_STATUS = 1
+        const val NOTIF_ID_VOICE_STATUS = 900
         private const val NOTIF_ID_ALERT_BASE = 1000
         private const val NOTIF_ID_CLEAR_BASE = 500
 
@@ -40,6 +43,8 @@ class Notifier(private val context: Context) {
 
         fun watchChannel(profileId: Long) = "$WATCH_CHANNEL_PREFIX$profileId"
         fun warningChannel(profileId: Long) = "$WARNING_CHANNEL_PREFIX$profileId"
+        fun clearWatchChannel(profileId: Long) = "$CLEAR_WATCH_CHANNEL_PREFIX$profileId"
+        fun clearWarningChannel(profileId: Long) = "$CLEAR_WARNING_CHANNEL_PREFIX$profileId"
 
         /** Unique per (profile, aircraft); a tier escalation updates the same notification. */
         fun alertId(profileId: Long, hex: String): Int =
@@ -64,47 +69,59 @@ class Notifier(private val context: Context) {
         }
     }
 
-    /** Cheerful departure chimes — one channel per cleared tier. */
-    fun ensureClearChannels() {
+    /**
+     * Cheerful departure chimes — one channel per (profile, cleared tier) so the
+     * chime follows that profile's sound/vibration toggles. When a tier's spoken
+     * voice is enabled its chime channel is created soundless, mirroring the
+     * alert channels (the voice replaces the tone). The pre-per-profile global
+     * channels are removed so they can't chime on their own.
+     */
+    fun ensureClearChannels(profile: Profile) {
+        notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_CLEAR_WARNING)
+        notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_CLEAR_WATCH)
         ensureChannel(
-            CHANNEL_CLEAR_WARNING,
-            "Cleared — warning zone",
+            clearWarningChannel(profile.id),
+            "Cleared — ${profile.name} warning zone",
             NotificationManager.IMPORTANCE_DEFAULT,
-            "An aircraft left the warning zone",
-            soundEnabled = true,
+            "An aircraft left the warning zone of ${profile.name}",
+            soundEnabled = profile.soundEnabled && !profile.warningVoiceEnabled,
             sound = android.net.Uri.parse("android.resource://${context.packageName}/raw/clear_warning"),
-            vibration = true,
+            vibration = profile.vibrationEnabled,
         )
         ensureChannel(
-            CHANNEL_CLEAR_WATCH,
-            "Cleared — watch layer",
+            clearWatchChannel(profile.id),
+            "Cleared — ${profile.name} watch layer",
             NotificationManager.IMPORTANCE_DEFAULT,
-            "An aircraft left the watch layer",
-            soundEnabled = true,
+            "An aircraft left the watch layer of ${profile.name}",
+            soundEnabled = profile.soundEnabled && !profile.watchVoiceEnabled,
             sound = android.net.Uri.parse("android.resource://${context.packageName}/raw/clear_watch"),
-            vibration = true,
+            vibration = profile.vibrationEnabled,
         )
     }
 
-    /** Watch channel: normal-priority notification sound. Warning channel: urgent alarm sound. */
+    /**
+     * Watch channel: normal-priority notification sound. Warning channel: urgent
+     * alarm sound. When voice announcements are enabled for a layer its channel
+     * is created soundless — the synthesized voice replaces the tone.
+     */
     fun ensureAlertChannels(profile: Profile) {
         ensureChannel(
             watchChannel(profile.id),
             "Alerts — ${profile.name}",
             NotificationManager.IMPORTANCE_DEFAULT,
             "Aircraft entering ${profile.name} (watch layer)",
-            profile.soundEnabled,
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-            profile.vibrationEnabled,
+            soundEnabled = profile.soundEnabled && !profile.watchVoiceEnabled,
+            sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+            vibration = profile.vibrationEnabled,
         )
         ensureChannel(
             warningChannel(profile.id),
             "WARNING — ${profile.name}",
             NotificationManager.IMPORTANCE_HIGH,
             "Aircraft in the warning volume of ${profile.name}",
-            profile.soundEnabled,
-            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-            true,
+            soundEnabled = profile.soundEnabled && !profile.warningVoiceEnabled,
+            sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+            vibration = profile.vibrationEnabled,
         )
     }
 
@@ -117,7 +134,15 @@ class Notifier(private val context: Context) {
         sound: android.net.Uri?,
         vibration: Boolean,
     ) {
-        if (notificationManager.getNotificationChannel(id) != null) return
+        val existing = notificationManager.getNotificationChannel(id)
+        if (existing != null) {
+            // Channels are immutable once created; only a delete + recreate applies
+            // changed sound/vibration settings (voice toggle, sound/vibration flags).
+            val existingHasSound = existing.sound != null
+            val wantsSound = soundEnabled && sound != null
+            if (existingHasSound == wantsSound && existing.shouldVibrate() == vibration) return
+            notificationManager.deleteNotificationChannel(id)
+        }
         notificationManager.createNotificationChannel(
             NotificationChannel(id, name, importance).apply {
                 this.description = description
@@ -198,6 +223,15 @@ class Notifier(private val context: Context) {
         ac.groundSpeedKt?.let {
             detail.appendLine(context.getString(R.string.alert_line_gs, formatSpeed(it, distanceUnit)))
         }
+        ac.verticalRateFpm?.let { fpm ->
+            detail.appendLine(
+                context.getString(
+                    R.string.alert_line_vs,
+                    ca.airspacemonitor.data.DisplayFormats.verticalRatePhrase(fpm, altitudeUnit)
+                        .replaceFirstChar { it.uppercase() },
+                ),
+            )
+        }
         ac.trackDeg?.let {
             detail.appendLine(context.getString(R.string.alert_line_track, it, ca.airspacemonitor.domain.GeoMath.compass8(it)))
         }
@@ -250,19 +284,50 @@ class Notifier(private val context: Context) {
 
     /** One notification per tier with the cheerful chime of that tier's channel. */
     fun postCleared(profile: Profile, departures: List<AircraftTracker.Departure>) {
-        ensureClearChannels()
+        ensureClearChannels(profile)
         for ((tier, group) in departures.groupBy { it.lastTier }) {
             val text = when (tier) {
                 Tier.WARNING -> context.getString(R.string.cleared_warning_text, group.size)
                 Tier.WATCH -> context.getString(R.string.cleared_watch_text, group.size)
             }
-            val notification = baseBuilder(if (tier == Tier.WARNING) CHANNEL_CLEAR_WARNING else CHANNEL_CLEAR_WATCH)
+            val notification = baseBuilder(
+                if (tier == Tier.WARNING) clearWarningChannel(profile.id) else clearWatchChannel(profile.id),
+            )
                 .setContentTitle(context.getString(R.string.cleared_notification_title, profile.name))
                 .setContentText(text)
                 .setAutoCancel(true)
                 .build()
             notificationManager.notify(clearId(profile.id, tier), notification)
         }
+    }
+
+    /**
+     * TTS init failed — almost always because no text-to-speech engine is
+     * installed (e.g. GrapheneOS ships without one). Tell the user once instead
+     * of failing silently; the next monitoring restart retries TTS.
+     */
+    fun postVoiceUnavailable() {
+        ensureChannel(
+            CHANNEL_VOICE_STATUS,
+            "Voice announcements",
+            NotificationManager.IMPORTANCE_DEFAULT,
+            "Problems with spoken voice announcements",
+            soundEnabled = true,
+            sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+            vibration = false,
+        )
+        val text = "No text-to-speech engine was found, so spoken alerts are off. " +
+            "Install one (e.g. RHVoice or eSpeak NG from F-Droid) and enable it in " +
+            "Android Settings > Text-to-speech output, then restart monitoring."
+        notificationManager.notify(
+            NOTIF_ID_VOICE_STATUS,
+            baseBuilder(CHANNEL_VOICE_STATUS)
+                .setContentTitle("Spoken voice unavailable")
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     private fun baseBuilder(channel: String): NotificationCompat.Builder =
@@ -291,18 +356,12 @@ class Notifier(private val context: Context) {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun formatDistance(km: Double, unit: DistanceUnit): String = when (unit) {
-        DistanceUnit.KM -> "%.1f km".format(km)
-        DistanceUnit.NM -> "%.1f nm".format(Units.kmToNm(km))
-    }
+    private fun formatDistance(km: Double, unit: DistanceUnit): String =
+        ca.airspacemonitor.data.DisplayFormats.formatDistance(km, unit)
 
-    private fun formatAltitude(ft: Double, unit: AltitudeUnit): String = when (unit) {
-        AltitudeUnit.FT -> "%,d ft".format(Math.round(ft).toLong())
-        AltitudeUnit.M -> "%,d m".format(Math.round(Units.feetToMeters(ft)).toLong())
-    }
+    private fun formatAltitude(ft: Double, unit: AltitudeUnit): String =
+        ca.airspacemonitor.data.DisplayFormats.formatAltitude(ft, unit)
 
-    private fun formatSpeed(knots: Double, unit: DistanceUnit): String = when (unit) {
-        DistanceUnit.KM -> "%.0f km/h".format(Units.knotsToKmh(knots))
-        DistanceUnit.NM -> "%.0f kt".format(knots)
-    }
+    private fun formatSpeed(knots: Double, unit: DistanceUnit): String =
+        ca.airspacemonitor.data.DisplayFormats.formatSpeed(knots, unit)
 }

@@ -21,7 +21,12 @@ class AircraftTracker {
     data class Alert(val aircraft: MatchedAircraft, val isNew: Boolean)
 
     /** A tracked aircraft that stopped appearing; [lastTier] selects the "cleared" tone. */
-    data class Departure(val hex: String, val lastTier: Tier)
+    data class Departure(
+        val hex: String,
+        val lastTier: Tier,
+        val ident: String? = null,
+        val type: String? = null,
+    )
 
     data class CycleResult(
         val alerts: List<Alert>,
@@ -35,6 +40,10 @@ class AircraftTracker {
         var lastSeenMs: Long,
         var lastAlertMs: Long = 0L,
         var lastTier: Tier = Tier.WATCH,
+        /** Callsign/registration of the last sighting, for the spoken clearance. */
+        var lastIdent: String? = null,
+        /** ICAO type designator of the last sighting, for the spoken clearance. */
+        var lastType: String? = null,
         /** First cycle this aircraft was absent; null while seen. */
         var missingSinceMs: Long? = null,
         /** The one-time "cleared" chime has already been fired for this stay. */
@@ -57,9 +66,10 @@ class AircraftTracker {
 
         for (m in sightings) {
             val hex = m.aircraft.hex
+            val ident = m.aircraft.callsign ?: m.aircraft.registration
             val entry = entries[hex]
             if (entry == null) {
-                entries[hex] = Entry(lastSeenMs = nowMs, lastTier = m.tier)
+                entries[hex] = Entry(lastSeenMs = nowMs, lastTier = m.tier, lastIdent = ident, lastType = m.aircraft.type)
                 if (!alertsSuppressed) {
                     entries[hex]!!.lastAlertMs = nowMs
                     alerts.add(Alert(m, isNew = true))
@@ -67,6 +77,8 @@ class AircraftTracker {
             } else {
                 entry.lastSeenMs = nowMs
                 entry.missingSinceMs = null
+                entry.lastIdent = ident ?: entry.lastIdent
+                entry.lastType = m.aircraft.type ?: entry.lastType
                 val escalated = m.tier == Tier.WARNING && entry.lastTier != Tier.WARNING
                 entry.lastTier = m.tier
                 if (!alertsSuppressed && (escalated || nowMs - entry.lastAlertMs >= cooldownMs)) {
@@ -85,7 +97,7 @@ class AircraftTracker {
             if (e.missingSinceMs == null) e.missingSinceMs = nowMs
             if (!e.clearReported && nowMs - e.missingSinceMs!! >= clearAfterMs) {
                 e.clearReported = true
-                departures.add(Departure(hex, e.lastTier))
+                departures.add(Departure(hex, e.lastTier, e.lastIdent, e.lastType))
             }
         }
 

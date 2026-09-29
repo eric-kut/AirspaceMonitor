@@ -25,6 +25,7 @@ class TestModeViewModel(private val container: AppContainer) : ViewModel() {
         altitudeFt: Double,
         distanceKm: Double,
         bearingDeg: Double,
+        verticalRateFpm: Double? = null,
     ) {
         container.testInjector.inject(
             TestInjector.Spec(
@@ -33,6 +34,7 @@ class TestModeViewModel(private val container: AppContainer) : ViewModel() {
                 altitudeFt = altitudeFt,
                 distanceKm = distanceKm,
                 bearingDeg = bearingDeg,
+                verticalRateFpm = verticalRateFpm,
             ),
         )
     }

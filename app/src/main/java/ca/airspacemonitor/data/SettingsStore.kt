@@ -17,6 +17,16 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 enum class DistanceUnit { KM, NM }
 enum class AltitudeUnit { FT, M }
 
+/** Where spoken-announcement distances ("…from you") are measured from. */
+enum class VoiceRefMode {
+    /** The phone's live GPS fix. */
+    PHONE,
+    /** A point the user marked on the map (e.g. their flying site). */
+    MAP_POINT,
+    /** The centroid of the monitored zone. */
+    CENTROID,
+}
+
 data class AppSettings(
     val disclaimerAcknowledged: Boolean = false,
     val distanceUnit: DistanceUnit = DistanceUnit.KM,
@@ -32,6 +42,10 @@ data class AppSettings(
     ),
     /** OSM tile URL template with {z}/{x}/{y}; blank = osmdroid default MAPNIK. */
     val tileServerTemplate: String = "",
+    val voiceRefMode: VoiceRefMode = VoiceRefMode.PHONE,
+    /** Coordinates of the MAP_POINT voice reference. */
+    val voiceRefLat: Double? = null,
+    val voiceRefLon: Double? = null,
 )
 
 class SettingsStore(private val context: Context) {
@@ -44,6 +58,9 @@ class SettingsStore(private val context: Context) {
         val HISTORY = booleanPreferencesKey("history_enabled")
         val HOSTS = stringPreferencesKey("api_hosts_json")
         val TILE_TEMPLATE = stringPreferencesKey("tile_server_template")
+        val VOICE_REF_MODE = stringPreferencesKey("voice_ref_mode")
+        val VOICE_REF_LAT = stringPreferencesKey("voice_ref_lat")
+        val VOICE_REF_LON = stringPreferencesKey("voice_ref_lon")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -59,6 +76,11 @@ class SettingsStore(private val context: Context) {
                 runCatching { json.decodeFromString<List<String>>(raw) }.getOrNull()
             }?.takeIf { it.isNotEmpty() } ?: AppSettings().hosts,
             tileServerTemplate = p[Keys.TILE_TEMPLATE] ?: "",
+            voiceRefMode = (p[Keys.VOICE_REF_MODE])
+                ?.let { runCatching { VoiceRefMode.valueOf(it) }.getOrNull() }
+                ?: VoiceRefMode.PHONE,
+            voiceRefLat = p[Keys.VOICE_REF_LAT]?.toDoubleOrNull(),
+            voiceRefLon = p[Keys.VOICE_REF_LON]?.toDoubleOrNull(),
         )
     }
 
@@ -77,6 +99,13 @@ class SettingsStore(private val context: Context) {
     suspend fun setHosts(hosts: List<String>) = edit { it[Keys.HOSTS] = json.encodeToString(hosts) }
 
     suspend fun setTileServerTemplate(template: String) = edit { it[Keys.TILE_TEMPLATE] = template }
+
+    suspend fun setVoiceRefMode(value: VoiceRefMode) = edit { it[Keys.VOICE_REF_MODE] = value.name }
+
+    suspend fun setVoiceRefPoint(lat: Double, lon: Double) = edit {
+        it[Keys.VOICE_REF_LAT] = lat.toString()
+        it[Keys.VOICE_REF_LON] = lon.toString()
+    }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.dataStore.edit { block(it) }

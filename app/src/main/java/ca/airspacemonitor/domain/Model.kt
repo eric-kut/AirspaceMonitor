@@ -4,8 +4,6 @@ data class GeoPoint(val lat: Double, val lon: Double)
 
 enum class GeofenceMode { FOLLOW_PHONE, FIXED_CIRCLE, POLYGON }
 
-enum class CeilingUnit { FT, M }
-
 enum class CeilingRef { ASL, AGL }
 
 /** Alert urgency level: the mandatory base zone is the WARNING tier; the optional outer watch layer is WATCH. */
@@ -20,15 +18,18 @@ data class Profile(
     val centerLon: Double? = null,
     val radiusKm: Double? = null,
     val polygon: List<GeoPoint>? = null,
-    /** Warning zone ceiling. */
+    /** Warning zone ceiling, in feet. */
     val ceilingValue: Double,
-    val ceilingUnit: CeilingUnit,
     val ceilingRef: CeilingRef,
     val terrainElevM: Double? = null,
     val pollIntervalSec: Int = 12,
-    val alertCooldownMin: Int = 2,
+    val alertCooldownMin: Double = 2.0,
     val soundEnabled: Boolean = true,
     val vibrationEnabled: Boolean = true,
+    /** Speak a synthesized voice announcement for warning-tier alerts (replaces the tone). */
+    val warningVoiceEnabled: Boolean = false,
+    /** Speak a synthesized voice announcement for watch-tier alerts (replaces the tone). */
+    val watchVoiceEnabled: Boolean = false,
     /**
      * Optional outer watch layer: a wider/higher buffer around the warning
      * zone that elicits a plain "be watchful" notification instead of the
@@ -50,12 +51,10 @@ data class WatchVolume(
     val polygon: List<GeoPoint>? = null,
     /** OFFSET only: horizontal margin added to the warning zone extent, in km. */
     val offsetHkm: Double = 4.0,
-    /** OFFSET only: vertical margin added to the warning ceiling, in [offsetVUnit]. */
+    /** OFFSET only: vertical margin added to the warning ceiling, in feet. */
     val offsetV: Double = 300.0,
-    val offsetVUnit: CeilingUnit = CeilingUnit.FT,
-    /** Own ceiling for non-OFFSET modes. */
+    /** Own ceiling for non-OFFSET modes, in feet. */
     val ceilingValue: Double = 3000.0,
-    val ceilingUnit: CeilingUnit = CeilingUnit.FT,
     val ceilingRef: CeilingRef = CeilingRef.ASL,
 )
 
@@ -71,6 +70,8 @@ data class Aircraft(
     val altBaroFt: Double? = null,
     /** Geometric altitude in feet (fallback when alt_baro is unusable). */
     val altGeomFt: Double? = null,
+    /** Vertical rate in feet per minute (positive climbing, negative descending). */
+    val verticalRateFpm: Double? = null,
     val groundSpeedKt: Double? = null,
     val trackDeg: Double? = null,
     val seenSec: Double? = null,

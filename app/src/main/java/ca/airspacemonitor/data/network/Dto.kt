@@ -48,6 +48,9 @@ data class AircraftDto(
     val lon: Double? = null,
     @Serializable(with = FlexibleAltitudeSerializer::class) val alt_baro: Double? = null,
     val alt_geom: Double? = null,
+    /** Vertical rate in feet per minute (positive climbing, negative descending). */
+    val baro_rate: Double? = null,
+    val geom_rate: Double? = null,
     val gs: Double? = null,
     val track: Double? = null,
     val seen: Double? = null,

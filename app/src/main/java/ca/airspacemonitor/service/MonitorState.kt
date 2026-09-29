@@ -44,6 +44,10 @@ class MonitorState {
     private val _phonePoint = MutableStateFlow<GeoPoint?>(null)
     val phonePoint: StateFlow<GeoPoint?> = _phonePoint.asStateFlow()
 
+    /** Bumped every time monitoring goes from stopped to started; drives the map's auto-fit. */
+    private val _sessionGeneration = MutableStateFlow(-1)
+    val sessionGeneration: StateFlow<Int> = _sessionGeneration.asStateFlow()
+
     fun reset() {
         _running.value = false
         _runs.value = emptyMap()
@@ -55,7 +59,11 @@ class MonitorState {
     // Service-side setters
     fun setRunning(v: Boolean) { _running.value = v }
 
-    fun addRun(profile: Profile) { _runs.value = _runs.value + (profile.id to ProfileRun(profile)) }
+    fun addRun(profile: Profile) {
+        val wasEmpty = _runs.value.isEmpty()
+        _runs.value = _runs.value + (profile.id to ProfileRun(profile))
+        if (wasEmpty) _sessionGeneration.value++
+    }
 
     fun removeRun(profileId: Long) { _runs.value = _runs.value - profileId }
 

@@ -17,6 +17,7 @@
     <string name="alert_line_alt_msl">Altitude (MSL): %1$s</string>
     <string name="alert_line_alt_agl">Altitude (AGL, approx.): %1$s</string>
     <string name="alert_line_gs">Ground speed: %1$s</string>
+    <string name="alert_line_vs">Vertical speed: %1$s</string>
     <string name="alert_line_track">Track: %1$.0f° %2$s</string>
     <string name="alert_line_source">Source: %1$s</string>
     <string name="alert_line_age">Feed data age: %1$d s</string>

@@ -43,6 +43,12 @@ class AdsBClient(private val hostsProvider: suspend () -> List<String>) {
         val error: String?,
     )
 
+    data class HostTestResult(
+        val ok: Boolean,
+        /** e.g. "HTTP 404" or "OK — 23 aircraft returned". */
+        val message: String,
+    )
+
     /** GET {base}/point/{lat}/{lon}/{radius_nm} */
     suspend fun queryPoint(lat: Double, lon: Double, radiusNm: Double): FetchOutcome {
         val hosts = hostsProvider()
@@ -73,6 +79,35 @@ class AdsBClient(private val hostsProvider: suspend () -> List<String>) {
         }
     }
 
+    /**
+     * One-off reachability check against one specific host. Bypasses the
+     * failover rotation entirely and never mutates its state, so a manual test
+     * can't disturb a running monitoring session.
+     */
+    suspend fun testHost(host: String, lat: Double, lon: Double, radiusNm: Double): HostTestResult {
+        val url = "%s/point/%.5f/%.5f/%.3f".format(host.trim().removeSuffix("/"), lat, lon, radiusNm)
+        rateCap()
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return HostTestResult(false, "HTTP ${response.code}")
+                val body = response.body?.string()
+                if (body.isNullOrEmpty()) return HostTestResult(false, "empty response body")
+                val parsed = json.decodeFromString<V2Response>(body)
+                val count = parsed.ac?.size ?: 0
+                HostTestResult(
+                    true,
+                    if (count == 0) "reachable, no aircraft in range" else "OK — $count aircraft in range",
+                )
+            }
+        } catch (e: Exception) {
+            HostTestResult(false, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
     private suspend fun rateCap() {
         val since = System.currentTimeMillis() - lastRequestAtMs
         if (lastRequestAtMs > 0 && since in 0 until MIN_REQUEST_INTERVAL_MS) {
@@ -93,6 +128,7 @@ fun AircraftDto.toDomain(): Aircraft = Aircraft(
     lon = lon,
     altBaroFt = alt_baro,
     altGeomFt = alt_geom,
+    verticalRateFpm = baro_rate ?: geom_rate,
     groundSpeedKt = gs,
     trackDeg = track,
     seenSec = seen,

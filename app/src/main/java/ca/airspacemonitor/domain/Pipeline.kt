@@ -25,18 +25,17 @@ object Pipeline {
     /**
      * altMSL = alt_geom ?: alt_baro (numeric only; "ground"/null fall through to
      * NoAltitude). ASL: altMSL <= ceiling. AGL: (altMSL - terrain) <= ceiling,
-     * with terrain converted to feet. Units converted consistently.
+     * with terrain converted to feet. All ceilings are stored in feet.
      */
     fun altitudeOutcome(
         altBaroFt: Double?,
         altGeomFt: Double?,
-        ceilingValue: Double,
-        ceilingUnit: CeilingUnit,
+        ceilingValueFt: Double,
         ceilingRef: CeilingRef,
         terrainElevM: Double?,
     ): AltitudeOutcome {
         val altMslFt = altGeomFt ?: altBaroFt ?: return AltitudeOutcome.NoAltitude
-        val ceilingFt = if (ceilingUnit == CeilingUnit.FT) ceilingValue else Units.metersToFeet(ceilingValue)
+        val ceilingFt = ceilingValueFt
         val eps = 1e-6
         return when (ceilingRef) {
             CeilingRef.ASL ->
@@ -87,7 +86,7 @@ object Pipeline {
             val inWarning = insideWarningZone(profile, reference, position) &&
                 altitudeOutcome(
                     ac.altBaroFt, ac.altGeomFt,
-                    profile.ceilingValue, profile.ceilingUnit, profile.ceilingRef,
+                    profile.ceilingValue, profile.ceilingRef,
                     profile.terrainElevM,
                 ) is AltitudeOutcome.Pass
 
@@ -181,20 +180,14 @@ object Pipeline {
         }
         if (!inside) return false
         return when (watch.mode) {
-            WatchMode.OFFSET -> {
-                val warningCeilingFt = if (profile.ceilingUnit == CeilingUnit.FT) profile.ceilingValue
-                else Units.metersToFeet(profile.ceilingValue)
-                val offsetFt = if (watch.offsetVUnit == CeilingUnit.FT) watch.offsetV
-                else Units.metersToFeet(watch.offsetV)
-                altitudeOutcome(
-                    altBaroFt, altGeomFt,
-                    warningCeilingFt + offsetFt, CeilingUnit.FT,
-                    profile.ceilingRef, profile.terrainElevM,
-                ) is AltitudeOutcome.Pass
-            }
+            WatchMode.OFFSET -> altitudeOutcome(
+                altBaroFt, altGeomFt,
+                profile.ceilingValue + watch.offsetV,
+                profile.ceilingRef, profile.terrainElevM,
+            ) is AltitudeOutcome.Pass
             else -> altitudeOutcome(
                 altBaroFt, altGeomFt,
-                watch.ceilingValue, watch.ceilingUnit, watch.ceilingRef,
+                watch.ceilingValue, watch.ceilingRef,
                 profile.terrainElevM,
             ) is AltitudeOutcome.Pass
         }

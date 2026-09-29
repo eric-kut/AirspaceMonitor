@@ -5,7 +5,6 @@ import ca.airspacemonitor.data.db.ProfileEntity
 import ca.airspacemonitor.data.db.toDomain
 import ca.airspacemonitor.data.db.toEntity
 import ca.airspacemonitor.domain.CeilingRef
-import ca.airspacemonitor.domain.CeilingUnit
 import ca.airspacemonitor.domain.GeoPoint
 import ca.airspacemonitor.domain.GeofenceMode
 import ca.airspacemonitor.domain.Profile
@@ -50,13 +49,14 @@ class ProfileRepository(private val dao: ProfileDao) {
             radiusKm = 5.0,
             polygonJson = null,
             ceilingValue = 400.0,
-            ceilingUnit = CeilingUnit.FT.name,
             ceilingRef = CeilingRef.AGL.name,
             terrainElevM = 70.0,
             pollIntervalSec = 12,
-            alertCooldownMin = 2,
+            alertCooldownMin = 2.0,
             soundEnabled = true,
             vibrationEnabled = true,
+            warningVoiceEnabled = false,
+            watchVoiceEnabled = false,
         )
         dao.insert(example)
     }

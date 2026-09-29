@@ -45,6 +45,7 @@ fun TestModeScreen() {
     var altitude by remember { mutableStateOf("2500") }
     var distance by remember { mutableStateOf("2") }
     var bearing by remember { mutableStateOf("45") }
+    var verticalRate by remember { mutableStateOf("0") }
 
     val scroll = rememberScrollState()
 
@@ -124,6 +125,13 @@ fun TestModeScreen() {
                 modifier = Modifier.weight(1f),
             )
         }
+        OutlinedTextField(
+            value = verticalRate,
+            onValueChange = { verticalRate = it },
+            label = { Text("Vertical rate (ft/min; + climb, − descent)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
@@ -134,6 +142,7 @@ fun TestModeScreen() {
                         altitudeFt = altitude.toDoubleOrNull() ?: 2500.0,
                         distanceKm = distance.toDoubleOrNull() ?: 2.0,
                         bearingDeg = bearing.toDoubleOrNull() ?: 45.0,
+                        verticalRateFpm = verticalRate.toDoubleOrNull(),
                     )
                 },
                 enabled = running,

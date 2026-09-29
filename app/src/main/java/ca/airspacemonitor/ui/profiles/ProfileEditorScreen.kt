@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,8 +41,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.NavController
 import ca.airspacemonitor.AirspaceApp
+import ca.airspacemonitor.data.AltitudeUnit
+import ca.airspacemonitor.data.DistanceUnit
+import ca.airspacemonitor.data.DisplayFormats
 import ca.airspacemonitor.domain.CeilingRef
-import ca.airspacemonitor.domain.CeilingUnit
 import ca.airspacemonitor.domain.GeoMath
 import ca.airspacemonitor.domain.GeoPoint
 import ca.airspacemonitor.domain.GeofenceMode
@@ -142,7 +145,7 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                 "Tap the map to move the warning zone center, or use your GPS position below."
             GeofenceMode.FOLLOW_PHONE ->
                 "The warning zone follows your GPS position while monitoring." +
-                    if (center != null) " Preview center: %.4f, %.4f".format(center.lat, center.lon) else ""
+                    if (center != null) " Preview center: ${formatCoord(center.lat)}, ${formatCoord(center.lon)}" else ""
         }
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
             Column {
@@ -241,11 +244,12 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                 if (s.geofenceMode == GeofenceMode.FIXED_CIRCLE) {
                     OutlinedButton(onClick = vm::useMyGpsPosition) { Text("Use my GPS position") }
                 }
-                Text("Radius: ${"%.1f".format(s.radiusKm)} km", style = MaterialTheme.typography.titleSmall)
+                Text("Radius: ${displayDistance(s.radiusKm, s.distanceUnit)}", style = MaterialTheme.typography.titleSmall)
                 Slider(
                     value = s.radiusKm.toFloat(),
                     onValueChange = { vm.setRadius((it * 2).toInt() / 2.0) },
-                    valueRange = 0.5f..20.0f,
+                    valueRange = 2f..30f,
+                    steps = 55,
                 )
             }
 
@@ -253,8 +257,7 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                 label = "Warning ceiling",
                 valueText = s.ceilingValueText,
                 onValue = vm::setCeilingValue,
-                unit = s.ceilingUnit,
-                onUnit = vm::setCeilingUnit,
+                altitudeUnit = s.altitudeUnit,
                 ref = s.ceilingRef,
                 onRef = vm::setCeilingRef,
                 terrainText = s.terrainText,
@@ -281,12 +284,15 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                 valueRange = 5f..60f,
                 steps = 54,
             )
-            Text("Re-alert cooldown: ${s.cooldownMin} min", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Re-alert cooldown: " + formatMinutes(s.cooldownMin) + " min",
+                style = MaterialTheme.typography.titleSmall,
+            )
             Slider(
                 value = s.cooldownMin.toFloat(),
-                onValueChange = { vm.setCooldown(it.toInt()) },
-                valueRange = 1f..30f,
-                steps = 28,
+                onValueChange = { vm.setCooldown((it * 2).toInt() / 2.0) },
+                valueRange = 1f..10f,
+                steps = 17,
             )
 
             // ---- Alerts ---------------------------------------------------
@@ -297,6 +303,17 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Vibration", modifier = Modifier.weight(1f))
                 Switch(checked = s.vibrationEnabled, onCheckedChange = vm::setVibration)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Spoken voice — warning layer")
+                    Text(
+                        "Replaces the alarm tone with a synthesized announcement.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = s.warningVoiceEnabled, onCheckedChange = vm::setWarningVoice)
             }
 
             // ---- Watch layer (optional) -------------------------------------
@@ -343,7 +360,7 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(
-                            "Horizontal offset: ${"%.1f".format(s.watchOffsetHkm)} km",
+                            "Horizontal offset: ${displayDistance(s.watchOffsetHkm, s.distanceUnit)}",
                             style = MaterialTheme.typography.titleSmall,
                         )
                         Slider(
@@ -351,25 +368,13 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                             onValueChange = { vm.setWatchOffsetHkm((it * 2).toInt() / 2.0) },
                             valueRange = 0.5f..20.0f,
                         )
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = s.watchOffsetVText,
-                                onValueChange = vm::setWatchOffsetV,
-                                label = { Text("Vertical offset") },
-                                singleLine = true,
-                                modifier = Modifier.weight(1f),
-                            )
-                            FilterChip(
-                                selected = s.watchOffsetVUnit == CeilingUnit.FT,
-                                onClick = { vm.setWatchOffsetVUnit(CeilingUnit.FT) },
-                                label = { Text("ft") },
-                            )
-                            FilterChip(
-                                selected = s.watchOffsetVUnit == CeilingUnit.M,
-                                onClick = { vm.setWatchOffsetVUnit(CeilingUnit.M) },
-                                label = { Text("m") },
-                            )
-                        }
+                        OutlinedTextField(
+                            value = s.watchOffsetVText,
+                            onValueChange = vm::setWatchOffsetV,
+                            label = { Text("Vertical offset (${DisplayFormats.altitudeSuffix(s.altitudeUnit)})") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                         effectiveWatchCeilingText(s)?.let {
                             Text(
                                 "Effective watch ceiling: $it",
@@ -379,11 +384,12 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                         }
                     }
                     WatchMode.FOLLOW_PHONE, WatchMode.FIXED_CIRCLE -> {
-                        Text("Watch radius: ${"%.1f".format(s.watchRadiusKm)} km", style = MaterialTheme.typography.titleSmall)
+                        Text("Watch radius: ${displayDistance(s.watchRadiusKm, s.distanceUnit)}", style = MaterialTheme.typography.titleSmall)
                         Slider(
                             value = s.watchRadiusKm.toFloat(),
                             onValueChange = { vm.setWatchRadius((it * 2).toInt() / 2.0) },
-                            valueRange = 0.5f..20.0f,
+                            valueRange = 2f..30f,
+                            steps = 55,
                         )
                         if (s.watchMode == WatchMode.FIXED_CIRCLE) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -412,8 +418,7 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                             label = "Watch ceiling",
                             valueText = s.watchCeilingText,
                             onValue = vm::setWatchCeilingValue,
-                            unit = s.watchCeilingUnit,
-                            onUnit = vm::setWatchCeilingUnit,
+                            altitudeUnit = s.altitudeUnit,
                             ref = s.watchCeilingRef,
                             onRef = vm::setWatchCeilingRef,
                             terrainText = s.terrainText,
@@ -432,8 +437,7 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                             label = "Watch ceiling",
                             valueText = s.watchCeilingText,
                             onValue = vm::setWatchCeilingValue,
-                            unit = s.watchCeilingUnit,
-                            onUnit = vm::setWatchCeilingUnit,
+                            altitudeUnit = s.altitudeUnit,
                             ref = s.watchCeilingRef,
                             onRef = vm::setWatchCeilingRef,
                             terrainText = s.terrainText,
@@ -442,6 +446,18 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
                             elevationStatus = s.elevationStatus,
                         )
                     }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Spoken voice — watch layer")
+                        Text(
+                            "Replaces the watch notification sound with a synthesized announcement.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = s.watchVoiceEnabled, onCheckedChange = vm::setWatchVoice)
                 }
 
                 // ---- Watch map: grey warning zone as reference, watch layer editable
@@ -492,25 +508,71 @@ fun ProfileEditorScreen(navController: NavController, profileId: Long?) {
             Spacer(Modifier.height(12.dp))
         }
     }
+
+    s.saveDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = vm::onSaveDialogCancel,
+            title = { Text(if (dialog.isNameDialog) "Can't save profile" else "Fix the profile") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        dialog.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (dialog.isNameDialog) {
+                        OutlinedTextField(
+                            value = dialog.nameText,
+                            onValueChange = vm::onSaveDialogNameChanged,
+                            label = { Text("Profile name") },
+                            singleLine = true,
+                            isError = dialog.nameTaken,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "Edit the name and tap OK to save, or Cancel to go back.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { vm.onSaveDialogOk { navController.popBackStack() } }) {
+                    Text(if (dialog.isNameDialog) "OK" else "Go back")
+                }
+            },
+            dismissButton = {
+                if (dialog.isNameDialog) {
+                    OutlinedButton(onClick = vm::onSaveDialogCancel) { Text("Cancel") }
+                }
+            },
+        )
+    }
 }
 
-/** "700 ft" style summary of warning ceiling + vertical offset (converted to ft/m). */
+/** Summary of warning ceiling + vertical offset, in the global display unit. */
 private fun effectiveWatchCeilingText(s: ProfileEditorViewModel.UiState): String? {
-    val ceiling = s.ceilingValueText.toDoubleOrNull() ?: return null
-    val offset = s.watchOffsetVText.toDoubleOrNull() ?: return null
-    val ceilingFt = if (s.ceilingUnit == CeilingUnit.FT) ceiling else Units.metersToFeet(ceiling)
-    val offsetFt = if (s.watchOffsetVUnit == CeilingUnit.FT) offset else Units.metersToFeet(offset)
-    val totalFt = ceilingFt + offsetFt
-    return "%.0f ft (%.0f m)".format(totalFt, Units.feetToMeters(totalFt))
+    val ceiling = parseDecimal(s.ceilingValueText) ?: return null
+    val offset = parseDecimal(s.watchOffsetVText) ?: return null
+    val ceilingFt = if (s.altitudeUnit == AltitudeUnit.FT) ceiling else Units.metersToFeet(ceiling)
+    val offsetFt = if (s.altitudeUnit == AltitudeUnit.FT) offset else Units.metersToFeet(offset)
+    return DisplayFormats.formatAltitude(ceilingFt + offsetFt, s.altitudeUnit)
 }
+
+/** Distance with the global unit suffix; the slider always works in km. */
+private fun displayDistance(km: Double, unit: DistanceUnit): String =
+    DisplayFormats.formatDistance(km, unit)
+
+/** "2" for whole minutes, "1.5" for halves — no trailing ".0". */
+private fun formatMinutes(min: Double): String =
+    if (min % 1.0 == 0.0) min.toInt().toString() else min.toString()
 
 @Composable
 private fun CeilingSection(
     label: String,
     valueText: String,
     onValue: (String) -> Unit,
-    unit: CeilingUnit,
-    onUnit: (CeilingUnit) -> Unit,
+    altitudeUnit: AltitudeUnit,
     ref: CeilingRef,
     onRef: (CeilingRef) -> Unit,
     terrainText: String,
@@ -523,17 +585,13 @@ private fun CeilingSection(
         "Aircraft at or below this altitude trigger alerts for this layer.",
         style = MaterialTheme.typography.bodySmall,
     )
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = valueText,
-            onValueChange = onValue,
-            label = { Text(label) },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-        )
-        FilterChip(selected = unit == CeilingUnit.FT, onClick = { onUnit(CeilingUnit.FT) }, label = { Text("ft") })
-        FilterChip(selected = unit == CeilingUnit.M, onClick = { onUnit(CeilingUnit.M) }, label = { Text("m") })
-    }
+    OutlinedTextField(
+        value = valueText,
+        onValueChange = onValue,
+        label = { Text("$label (${DisplayFormats.altitudeSuffix(altitudeUnit)})") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilterChip(selected = ref == CeilingRef.ASL, onClick = { onRef(CeilingRef.ASL) }, label = { Text("ASL") })
         FilterChip(selected = ref == CeilingRef.AGL, onClick = { onRef(CeilingRef.AGL) }, label = { Text("AGL") })

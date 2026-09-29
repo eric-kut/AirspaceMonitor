@@ -109,6 +109,23 @@ class MonitoringService : Service() {
     private var gpsListener: LocationListener? = null
 
     private val runtimes = ConcurrentHashMap<Long, Runtime>()
+    private var voiceAnnouncer: VoiceAnnouncer? = null
+
+    /** The TTS engine is only created the first time a voice-enabled alert fires. */
+    private fun ensureVoiceAnnouncer(): VoiceAnnouncer {
+        var a = voiceAnnouncer
+        if (a == null) {
+            synchronized(this) {
+                if (voiceAnnouncer == null) {
+                    voiceAnnouncer = VoiceAnnouncer(applicationContext).also { announcer ->
+                        announcer.onUnavailable = { notifier.postVoiceUnavailable() }
+                    }
+                }
+                a = voiceAnnouncer
+            }
+        }
+        return a!!
+    }
 
     override fun onBind(intent: Intent?) = null
 
@@ -199,10 +216,16 @@ class MonitoringService : Service() {
     }
 
     private fun updateGpsListener() {
+        // The voice reference point needs the phone fix too, even when the
+        // zones themselves are fixed — otherwise the "from you" clause is
+        // silently dropped for non-FOLLOW_PHONE profiles.
+        val anyVoice = runtimes.values.any {
+            it.profile.warningVoiceEnabled || it.profile.watchVoiceEnabled
+        }
         val needsGps = runtimes.values.any {
             it.profile.geofenceMode == GeofenceMode.FOLLOW_PHONE ||
                 it.profile.watch?.mode == ca.airspacemonitor.domain.WatchMode.FOLLOW_PHONE
-        }
+        } || (anyVoice && currentSettings.voiceRefMode == ca.airspacemonitor.data.VoiceRefMode.PHONE)
         if (needsGps) {
             if (gpsListener == null) startLocationUpdatesIfAllowed()
         } else {
@@ -212,7 +235,10 @@ class MonitoringService : Service() {
 
     private fun collectSettings() {
         settingsJob = scope.launch {
-            container.settingsStore.settings.collect { currentSettings = it }
+            container.settingsStore.settings.collect {
+                currentSettings = it
+                updateGpsListener()
+            }
         }
     }
 
@@ -286,20 +312,28 @@ class MonitoringService : Service() {
                 .coerceAtMost(MAX_QUERY_RADIUS_KM)
 
             var aircraft: List<ca.airspacemonitor.domain.Aircraft> = emptyList()
+            // A failed poll must NOT run the pipeline with an empty list: that
+            // would blank the map pins and start false gone/departure timers.
+            // Keep the last good tracked state and retry after the backoff.
+            var haveFreshData = false
             if (reference != null) {
                 val queryRadiusNm = Units.kmToNm(queryRadiusKm)
                 val outcome = container.adsbClient.queryPoint(reference.lat, reference.lon, queryRadiusNm)
+                // Test-mode injection keeps working with data off.
+                val injected = container.testInjector.aircraftFor(reference, nowMs)
                 if (outcome.error != null) {
                     consecutiveFailures++
                     state.updateRun(profile.id) { it.copy(lastError = outcome.error) }
+                    if (injected != null) {
+                        aircraft = listOf(injected)
+                        haveFreshData = true
+                    }
                 } else {
                     consecutiveFailures = 0
                     state.updateRun(profile.id) { it.copy(lastError = null) }
-                    aircraft = outcome.aircraft
+                    aircraft = outcome.aircraft + listOfNotNull(injected)
+                    haveFreshData = true
                 }
-
-                // Test-mode injection keeps working with data off.
-                container.testInjector.aircraftFor(reference, nowMs)?.let { aircraft = aircraft + it }
             } else {
                 state.updateRun(profile.id) { it.copy(lastError = "No GPS fix") }
             }
@@ -313,23 +347,45 @@ class MonitoringService : Service() {
             val phoneReference = profile.watch
                 ?.takeIf { it.mode == ca.airspacemonitor.domain.WatchMode.FOLLOW_PHONE }
                 ?.let { latestFix?.let { fix -> GeoPoint(fix.latitude, fix.longitude) } }
-            if (filterReference != null) {
+            if (haveFreshData && filterReference != null) {
                 val result = Pipeline.filter(aircraft, profile, filterReference, phoneReference)
                 val snoozed = container.snoozeStore.isSnoozed(nowMs)
                 val cycle = runtime.tracker.process(
                     sightings = result.matched,
                     nowMs = System.currentTimeMillis(),
-                    cooldownMs = profile.alertCooldownMin * 60_000L,
+                    cooldownMs = (profile.alertCooldownMin * 60_000.0).toLong(),
                     alertsSuppressed = snoozed,
                 )
 
                 val settings = currentSettings
+                val voiceRefPos = when (settings.voiceRefMode) {
+                    ca.airspacemonitor.data.VoiceRefMode.PHONE -> phoneFix
+                    ca.airspacemonitor.data.VoiceRefMode.MAP_POINT ->
+                        if (settings.voiceRefLat != null && settings.voiceRefLon != null) {
+                            GeoPoint(settings.voiceRefLat, settings.voiceRefLon)
+                        } else null
+                    ca.airspacemonitor.data.VoiceRefMode.CENTROID -> reference ?: filterReference
+                }
                 cycle.alerts.forEach { alert ->
                     notifier.postAlert(alert.aircraft, profile, settings.distanceUnit, settings.altitudeUnit)
+                    val voiceOn = when (alert.aircraft.tier) {
+                        ca.airspacemonitor.domain.Tier.WARNING -> profile.warningVoiceEnabled
+                        ca.airspacemonitor.domain.Tier.WATCH -> profile.watchVoiceEnabled
+                    }
+                    if (voiceOn) ensureVoiceAnnouncer().announce(alert.aircraft, settings, voiceRefPos)
                 }
                 cycle.gone.forEach { notifier.cancelAlert(profile.id, it) }
                 if (settings.allClearEnabled && cycle.departures.isNotEmpty()) {
                     notifier.postCleared(profile, cycle.departures)
+                    for ((tier, group) in cycle.departures.groupBy { it.lastTier }) {
+                        val clearVoiceOn = when (tier) {
+                            ca.airspacemonitor.domain.Tier.WARNING -> profile.warningVoiceEnabled
+                            ca.airspacemonitor.domain.Tier.WATCH -> profile.watchVoiceEnabled
+                        }
+                        if (clearVoiceOn) {
+                            ensureVoiceAnnouncer().announceText(AlertUtterance.buildCleared(tier, group))
+                        }
+                    }
                 }
 
                 recordHistory(profile, result.matched, cycle)
@@ -344,6 +400,8 @@ class MonitoringService : Service() {
 
                 postAggregateStatus(pollTs)
             }
+            // Still refresh the status notification's timestamp on skipped polls.
+            if (!haveFreshData) postAggregateStatus(pollTs)
 
             // Backoff: widen delay on consecutive failures, capped at 120 s.
             val delayMs = if (consecutiveFailures > 0) {
@@ -470,6 +528,8 @@ class MonitoringService : Service() {
         runtimes.values.forEach { it.job?.cancel() }
         runtimes.clear()
         stopLocationUpdates()
+        voiceAnnouncer?.shutdown()
+        voiceAnnouncer = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         if (this::container.isInitialized) container.monitorState.reset()

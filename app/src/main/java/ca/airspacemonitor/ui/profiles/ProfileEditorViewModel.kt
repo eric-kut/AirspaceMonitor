@@ -7,27 +7,35 @@ import android.location.LocationManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ca.airspacemonitor.data.AltitudeUnit
+import ca.airspacemonitor.data.DistanceUnit
 import ca.airspacemonitor.di.AppContainer
 import ca.airspacemonitor.domain.CeilingRef
-import ca.airspacemonitor.domain.CeilingUnit
 import ca.airspacemonitor.domain.GeoMath
 import ca.airspacemonitor.domain.GeoPoint
 import ca.airspacemonitor.domain.GeofenceMode
 import ca.airspacemonitor.domain.Profile
+import ca.airspacemonitor.domain.Units
 import ca.airspacemonitor.domain.WatchMode
-import ca.airspacemonitor.domain.WatchVolume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private const val MAX_POLYGON_VERTICES = 64
 
 class ProfileEditorViewModel(
     private val appContext: Context,
     private val container: AppContainer,
 ) : ViewModel() {
+
+    data class SaveDialogUiState(
+        val message: String,
+        val isNameDialog: Boolean = false,
+        val nameText: String = "",
+        /** True after the user typed a name that is already in use. */
+        val nameTaken: Boolean = false,
+    )
 
     data class UiState(
         val loaded: Boolean = false,
@@ -39,8 +47,8 @@ class ProfileEditorViewModel(
         val centerLonText: String = "-75.6972",
         val radiusKm: Double = 5.0,
         val polygon: List<GeoPoint> = emptyList(),
+        /** Ceiling texts are in the global display unit; stored values are ft. */
         val ceilingValueText: String = "400",
-        val ceilingUnit: CeilingUnit = CeilingUnit.FT,
         val ceilingRef: CeilingRef = CeilingRef.ASL,
         val terrainText: String = "",
         // ---- Optional outer watch layer -----------------------------------
@@ -51,17 +59,24 @@ class ProfileEditorViewModel(
         val watchCenterLonText: String = "",
         val watchPolygon: List<GeoPoint> = emptyList(),
         val watchCeilingText: String = "1500",
-        val watchCeilingUnit: CeilingUnit = CeilingUnit.FT,
         val watchCeilingRef: CeilingRef = CeilingRef.ASL,
         val watchOffsetHkm: Double = 4.0,
         val watchOffsetVText: String = "300",
-        val watchOffsetVUnit: CeilingUnit = CeilingUnit.FT,
+        // ---- Timing / alerts ----------------------------------------------
         val pollIntervalSec: Int = 12,
-        val cooldownMin: Int = 2,
+        val cooldownMin: Double = 2.0,
         val soundEnabled: Boolean = true,
         val vibrationEnabled: Boolean = true,
+        val warningVoiceEnabled: Boolean = false,
+        val watchVoiceEnabled: Boolean = false,
+        // ---- Captured global unit settings --------------------------------
+        val altitudeUnit: AltitudeUnit = AltitudeUnit.FT,
+        val distanceUnit: DistanceUnit = DistanceUnit.KM,
+        // ---- Feedback ------------------------------------------------------
+        /** Inline errors (GPS/elevation/map interactions); save failures use [saveDialog]. */
         val error: String? = null,
         val elevationStatus: String? = null,
+        val saveDialog: SaveDialogUiState? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -69,50 +84,57 @@ class ProfileEditorViewModel(
 
     fun load(profileId: Long?) {
         if (_state.value.loaded) return
-        if (profileId == null || profileId <= 0) {
-            _state.value = UiState(loaded = true)
-            return
-        }
         viewModelScope.launch {
-            val p = container.profileRepository.get(profileId) ?: return@launch
-            _state.value = UiState(
-                loaded = true,
-                id = p.id,
-                name = p.name,
-                geofenceMode = p.geofenceMode,
-                centerLatText = p.centerLat?.let { "%.6f".format(it) } ?: "",
-                centerLonText = p.centerLon?.let { "%.6f".format(it) } ?: "",
-                radiusKm = p.radiusKm ?: 5.0,
-                polygon = p.polygon ?: emptyList(),
-                ceilingValueText = p.ceilingValue.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() },
-                ceilingUnit = p.ceilingUnit,
-                ceilingRef = p.ceilingRef,
-                terrainText = p.terrainElevM?.let { "%.1f".format(it) } ?: "",
-                watchEnabled = p.watch != null,
-                watchMode = p.watch?.mode ?: WatchMode.OFFSET,
-                watchRadiusKm = p.watch?.radiusKm ?: 10.0,
-                watchCenterLatText = p.watch?.centerLat?.let { "%.6f".format(it) }
-                    ?: p.centerLat?.let { "%.6f".format(it) }
-                    ?: "",
-                watchCenterLonText = p.watch?.centerLon?.let { "%.6f".format(it) }
-                    ?: p.centerLon?.let { "%.6f".format(it) }
-                    ?: "",
-                watchPolygon = p.watch?.polygon ?: emptyList(),
-                watchCeilingText = p.watch?.ceilingValue
-                    ?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                    ?: "1500",
-                watchCeilingUnit = p.watch?.ceilingUnit ?: CeilingUnit.FT,
-                watchCeilingRef = p.watch?.ceilingRef ?: CeilingRef.ASL,
-                watchOffsetHkm = p.watch?.offsetHkm ?: 4.0,
-                watchOffsetVText = p.watch?.offsetV
-                    ?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-                    ?: "300",
-                watchOffsetVUnit = p.watch?.offsetVUnit ?: CeilingUnit.FT,
-                pollIntervalSec = p.pollIntervalSec,
-                cooldownMin = p.alertCooldownMin,
-                soundEnabled = p.soundEnabled,
-                vibrationEnabled = p.vibrationEnabled,
-            )
+            val settings = container.settingsStore.current()
+            val s = if (profileId == null || profileId <= 0) {
+                val (ceiling, watchCeiling, offsetV) = defaultDisplayTexts(settings.altitudeUnit)
+                UiState(
+                    loaded = true,
+                    altitudeUnit = settings.altitudeUnit,
+                    distanceUnit = settings.distanceUnit,
+                    ceilingValueText = ceiling,
+                    watchCeilingText = watchCeiling,
+                    watchOffsetVText = offsetV,
+                )
+            } else {
+                val p = container.profileRepository.get(profileId) ?: return@launch
+                UiState(
+                    loaded = true,
+                    id = p.id,
+                    name = p.name,
+                    altitudeUnit = settings.altitudeUnit,
+                    distanceUnit = settings.distanceUnit,
+                    geofenceMode = p.geofenceMode,
+                    centerLatText = p.centerLat?.let { formatCoord(it) } ?: "",
+                    centerLonText = p.centerLon?.let { formatCoord(it) } ?: "",
+                    radiusKm = p.radiusKm ?: 5.0,
+                    polygon = p.polygon ?: emptyList(),
+                    ceilingValueText = toDisplayText(p.ceilingValue, settings.altitudeUnit),
+                    ceilingRef = p.ceilingRef,
+                    terrainText = p.terrainElevM?.let { formatTerrain(it) } ?: "",
+                    watchEnabled = p.watch != null,
+                    watchMode = p.watch?.mode ?: WatchMode.OFFSET,
+                    watchRadiusKm = p.watch?.radiusKm ?: 10.0,
+                    watchCenterLatText = p.watch?.centerLat?.let { formatCoord(it) }
+                        ?.takeIf { p.watch?.mode == WatchMode.FIXED_CIRCLE }
+                        ?: "",
+                    watchCenterLonText = p.watch?.centerLon?.let { formatCoord(it) }
+                        ?.takeIf { p.watch?.mode == WatchMode.FIXED_CIRCLE }
+                        ?: "",
+                    watchPolygon = p.watch?.polygon ?: emptyList(),
+                    watchCeilingText = toDisplayText(p.watch?.ceilingValue ?: 1500.0, settings.altitudeUnit),
+                    watchCeilingRef = p.watch?.ceilingRef ?: CeilingRef.ASL,
+                    watchOffsetHkm = p.watch?.offsetHkm ?: 4.0,
+                    watchOffsetVText = toDisplayText(p.watch?.offsetV ?: 300.0, settings.altitudeUnit),
+                    pollIntervalSec = p.pollIntervalSec,
+                    cooldownMin = p.alertCooldownMin,
+                    soundEnabled = p.soundEnabled,
+                    vibrationEnabled = p.vibrationEnabled,
+                    warningVoiceEnabled = p.warningVoiceEnabled,
+                    watchVoiceEnabled = p.watchVoiceEnabled,
+                )
+            }
+            _state.value = s
         }
     }
 
@@ -121,13 +143,12 @@ class ProfileEditorViewModel(
     }
 
     // ---- Warning zone (mandatory) ----------------------------------------
-    fun setName(v: String) = update { it.copy(name = v) }
+    fun setName(v: String) = update { it.copy(name = v, saveDialog = null) }
     fun setMode(mode: GeofenceMode) = update { it.copy(geofenceMode = mode) }
     fun setCenterLat(v: String) = update { it.copy(centerLatText = v) }
     fun setCenterLon(v: String) = update { it.copy(centerLonText = v) }
     fun setRadius(km: Double) = update { it.copy(radiusKm = km) }
     fun setCeilingValue(v: String) = update { it.copy(ceilingValueText = v) }
-    fun setCeilingUnit(u: CeilingUnit) = update { it.copy(ceilingUnit = u) }
     fun setCeilingRef(r: CeilingRef) = update { it.copy(ceilingRef = r) }
     fun setTerrain(v: String) = update { it.copy(terrainText = v, elevationStatus = null) }
     fun undoVertex() = update { s ->
@@ -145,8 +166,8 @@ class ProfileEditorViewModel(
                         s.copy(polygon = s.polygon + point, error = null)
                     }
                 else -> s.copy(
-                    centerLatText = "%.6f".format(point.lat),
-                    centerLonText = "%.6f".format(point.lon),
+                    centerLatText = formatCoord(point.lat),
+                    centerLonText = formatCoord(point.lon),
                 )
             }
         }
@@ -172,18 +193,18 @@ class ProfileEditorViewModel(
     fun setWatchCenterLat(v: String) = update { it.copy(watchCenterLatText = v) }
     fun setWatchCenterLon(v: String) = update { it.copy(watchCenterLonText = v) }
     fun setWatchCeilingValue(v: String) = update { it.copy(watchCeilingText = v) }
-    fun setWatchCeilingUnit(u: CeilingUnit) = update { it.copy(watchCeilingUnit = u) }
     fun setWatchCeilingRef(r: CeilingRef) = update { it.copy(watchCeilingRef = r) }
     fun setWatchOffsetHkm(km: Double) = update { it.copy(watchOffsetHkm = km) }
     fun setWatchOffsetV(v: String) = update { it.copy(watchOffsetVText = v) }
-    fun setWatchOffsetVUnit(u: CeilingUnit) = update { it.copy(watchOffsetVUnit = u) }
     fun undoWatchVertex() = update { s ->
         if (s.watchPolygon.isEmpty()) s else s.copy(watchPolygon = s.watchPolygon.dropLast(1))
     }
     fun setPollInterval(sec: Int) = update { it.copy(pollIntervalSec = sec) }
-    fun setCooldown(min: Int) = update { it.copy(cooldownMin = min) }
+    fun setCooldown(min: Double) = update { it.copy(cooldownMin = min) }
     fun setSound(b: Boolean) = update { it.copy(soundEnabled = b) }
     fun setVibration(b: Boolean) = update { it.copy(vibrationEnabled = b) }
+    fun setWarningVoice(b: Boolean) = update { it.copy(warningVoiceEnabled = b) }
+    fun setWatchVoice(b: Boolean) = update { it.copy(watchVoiceEnabled = b) }
 
     /** Second-map tap edits the watch layer (polygon vertices or circle center). */
     fun onWatchMapTap(point: GeoPoint) {
@@ -196,8 +217,8 @@ class ProfileEditorViewModel(
                         s.copy(watchPolygon = s.watchPolygon + point, error = null)
                     }
                 WatchMode.FIXED_CIRCLE -> s.copy(
-                    watchCenterLatText = "%.6f".format(point.lat),
-                    watchCenterLonText = "%.6f".format(point.lon),
+                    watchCenterLatText = formatCoord(point.lat),
+                    watchCenterLonText = formatCoord(point.lon),
                 )
                 WatchMode.OFFSET, WatchMode.FOLLOW_PHONE -> s
             }
@@ -236,16 +257,16 @@ class ProfileEditorViewModel(
         }
         update { s ->
             s.copy(
-                centerLatText = "%.6f".format(fix.latitude),
-                centerLonText = "%.6f".format(fix.longitude),
+                centerLatText = formatCoord(fix.latitude),
+                centerLonText = formatCoord(fix.longitude),
                 error = null,
             )
         }
     }
 
     fun fetchElevation() {
-        val lat = _state.value.centerLatText.toDoubleOrNull()
-        val lon = _state.value.centerLonText.toDoubleOrNull()
+        val lat = parseDecimal(_state.value.centerLatText)
+        val lon = parseDecimal(_state.value.centerLonText)
         if (lat == null || lon == null) {
             update { it.copy(error = "Set the warning zone center before fetching elevation.") }
             return
@@ -258,7 +279,15 @@ class ProfileEditorViewModel(
             result.fold(
                 onSuccess = { meters ->
                     update { s ->
-                        s.copy(terrainText = "%.1f".format(meters), elevationStatus = "Terrain: $meters m (Open-Meteo ~90 m DEM)")
+                        val status = "Terrain: $meters m (Open-Meteo ~90 m DEM)"
+                        s.copy(
+                            terrainText = formatTerrain(meters),
+                            elevationStatus = if (s.altitudeUnit == AltitudeUnit.M) {
+                                status
+                            } else {
+                                "$status — ${Math.round(Units.feetToMeters(meters))} ft"
+                            },
+                        )
                     }
                 },
                 onFailure = { e ->
@@ -268,172 +297,124 @@ class ProfileEditorViewModel(
         }
     }
 
+    // ---- Save -------------------------------------------------------------
+
     fun save(onSaved: () -> Unit) {
-        val s = _state.value
-        // ---- Warning zone (mandatory) -------------------------------------
-        if (s.name.isBlank()) {
-            update { it.copy(error = "Name is required.") }
-            return
-        }
-        if (s.geofenceMode != GeofenceMode.POLYGON) {
-            val lat = s.centerLatText.toDoubleOrNull()
-            val lon = s.centerLonText.toDoubleOrNull()
-            if (lat == null || lon == null || lat !in -90.0..90.0 || lon !in -180.0..180.0) {
-                update { it.copy(error = "Warning zone center must be valid coordinates.") }
-                return
-            }
-            if (s.radiusKm !in 0.5..20.0) {
-                update { it.copy(error = "Warning zone radius must be between 0.5 and 20 km.") }
-                return
-            }
-        } else {
-            if (s.polygon.size < 3) {
-                update { it.copy(error = "Warning polygon needs at least 3 vertices (tap the map to add).") }
-                return
-            }
-            if (s.polygon.size > MAX_POLYGON_VERTICES) {
-                update { it.copy(error = "Warning polygon can have at most $MAX_POLYGON_VERTICES vertices.") }
-                return
-            }
-        }
-        val ceiling = s.ceilingValueText.toDoubleOrNull()
-        if (ceiling == null || ceiling <= 0.0) {
-            update { it.copy(error = "Warning ceiling must be a positive number.") }
-            return
-        }
-        val terrain = s.terrainText.toDoubleOrNull()
-        if (s.ceilingRef == CeilingRef.AGL && terrain == null) {
-            update { it.copy(error = "AGL warning ceiling requires a terrain elevation (fetch or enter manually).") }
-            return
-        }
-        if (terrain != null && terrain !in -500.0..9000.0) {
-            update { it.copy(error = "Terrain elevation out of range.") }
-            return
-        }
-
-        // ---- Watch layer (optional) ---------------------------------------
-        var watch: WatchVolume? = null
-        if (s.watchEnabled) {
-            when (s.watchMode) {
-                WatchMode.OFFSET -> {
-                    if (s.watchOffsetHkm !in 0.5..20.0) {
-                        update { it.copy(error = "Watch horizontal offset must be between 0.5 and 20 km.") }
-                        return
-                    }
-                    val offsetV = s.watchOffsetVText.toDoubleOrNull()
-                    if (offsetV == null || offsetV <= 0.0) {
-                        update { it.copy(error = "Watch vertical offset must be a positive number.") }
-                        return
-                    }
-                    watch = WatchVolume(
-                        mode = WatchMode.OFFSET,
-                        offsetHkm = s.watchOffsetHkm,
-                        offsetV = offsetV,
-                        offsetVUnit = s.watchOffsetVUnit,
-                    )
-                }
-                WatchMode.FOLLOW_PHONE -> {
-                    if (s.watchRadiusKm !in 0.5..20.0) {
-                        update { it.copy(error = "Watch radius must be between 0.5 and 20 km.") }
-                        return
-                    }
-                    val watchCeiling = s.watchCeilingText.toDoubleOrNull()
-                    if (watchCeiling == null || watchCeiling <= 0.0) {
-                        update { it.copy(error = "Watch ceiling must be a positive number.") }
-                        return
-                    }
-                    if (s.watchCeilingRef == CeilingRef.AGL && terrain == null) {
-                        update { it.copy(error = "AGL watch ceiling requires a terrain elevation (warning zone).") }
-                        return
-                    }
-                    watch = WatchVolume(
-                        mode = WatchMode.FOLLOW_PHONE,
-                        radiusKm = s.watchRadiusKm,
-                        ceilingValue = watchCeiling,
-                        ceilingUnit = s.watchCeilingUnit,
-                        ceilingRef = s.watchCeilingRef,
-                    )
-                }
-                WatchMode.FIXED_CIRCLE -> {
-                    if (s.watchRadiusKm !in 0.5..20.0) {
-                        update { it.copy(error = "Watch radius must be between 0.5 and 20 km.") }
-                        return
-                    }
-                    val watchCeiling = s.watchCeilingText.toDoubleOrNull()
-                    if (watchCeiling == null || watchCeiling <= 0.0) {
-                        update { it.copy(error = "Watch ceiling must be a positive number.") }
-                        return
-                    }
-                    if (s.watchCeilingRef == CeilingRef.AGL && terrain == null) {
-                        update { it.copy(error = "AGL watch ceiling requires a terrain elevation (warning zone).") }
-                        return
-                    }
-                    val wLat = s.watchCenterLatText.ifBlank { s.centerLatText }.toDoubleOrNull()
-                    val wLon = s.watchCenterLonText.ifBlank { s.centerLonText }.toDoubleOrNull()
-                    if (wLat == null || wLon == null || wLat !in -90.0..90.0 || wLon !in -180.0..180.0) {
-                        update { it.copy(error = "Watch center must be valid coordinates (tap the watch map to set it).") }
-                        return
-                    }
-                    watch = WatchVolume(
-                        mode = WatchMode.FIXED_CIRCLE,
-                        radiusKm = s.watchRadiusKm,
-                        centerLat = wLat,
-                        centerLon = wLon,
-                        ceilingValue = watchCeiling,
-                        ceilingUnit = s.watchCeilingUnit,
-                        ceilingRef = s.watchCeilingRef,
-                    )
-                }
-                WatchMode.POLYGON -> {
-                    if (s.watchPolygon.size < 3) {
-                        update { it.copy(error = "Watch polygon needs at least 3 vertices (tap the watch map below).") }
-                        return
-                    }
-                    if (s.watchPolygon.size > MAX_POLYGON_VERTICES) {
-                        update { it.copy(error = "Watch polygon can have at most $MAX_POLYGON_VERTICES vertices.") }
-                        return
-                    }
-                    val watchCeiling = s.watchCeilingText.toDoubleOrNull()
-                    if (watchCeiling == null || watchCeiling <= 0.0) {
-                        update { it.copy(error = "Watch ceiling must be a positive number.") }
-                        return
-                    }
-                    if (s.watchCeilingRef == CeilingRef.AGL && terrain == null) {
-                        update { it.copy(error = "AGL watch ceiling requires a terrain elevation (warning zone).") }
-                        return
-                    }
-                    watch = WatchVolume(
-                        mode = WatchMode.POLYGON,
-                        polygon = s.watchPolygon,
-                        ceilingValue = watchCeiling,
-                        ceilingUnit = s.watchCeilingUnit,
-                        ceilingRef = s.watchCeilingRef,
-                    )
-                }
-            }
-        }
-
-        val profile = Profile(
-            id = s.id,
-            name = s.name.trim(),
-            geofenceMode = s.geofenceMode,
-            centerLat = if (s.geofenceMode == GeofenceMode.POLYGON) null else s.centerLatText.toDouble(),
-            centerLon = if (s.geofenceMode == GeofenceMode.POLYGON) null else s.centerLonText.toDouble(),
-            radiusKm = if (s.geofenceMode == GeofenceMode.POLYGON) null else s.radiusKm,
-            polygon = if (s.geofenceMode == GeofenceMode.POLYGON) s.polygon else null,
-            ceilingValue = ceiling,
-            ceilingUnit = s.ceilingUnit,
-            ceilingRef = s.ceilingRef,
-            terrainElevM = if (s.ceilingRef == CeilingRef.AGL) terrain else null,
-            pollIntervalSec = s.pollIntervalSec,
-            alertCooldownMin = s.cooldownMin,
-            soundEnabled = s.soundEnabled,
-            vibrationEnabled = s.vibrationEnabled,
-            watch = watch,
-        )
         viewModelScope.launch {
-            container.profileRepository.save(profile)
-            onSaved()
+            val existing = container.profileRepository.profiles
+                .first()
+                .filter { it.id != _state.value.id }
+                .map { it.name }
+                .toSet()
+            when (val attempt = validateDraft(draft(_state.value), existing)) {
+                is SaveAttempt.Failure -> update { it.copy(saveDialog = SaveDialogUiState(attempt.message, attempt.needsNameDialog, attempt.suggestedName ?: "")) }
+                is SaveAttempt.Success -> persist(attempt.profile, onSaved)
+            }
         }
     }
+
+    fun onSaveDialogNameChanged(v: String) =
+        update { it.copy(saveDialog = it.saveDialog?.copy(nameText = v, nameTaken = false)) }
+
+    fun onSaveDialogCancel() = update { it.copy(saveDialog = null) }
+
+    /** OK on the name dialog: accept the (edited) name if free, then save again. */
+    fun onSaveDialogOk(onSaved: () -> Unit) {
+        val dialog = _state.value.saveDialog ?: return
+        val name = dialog.nameText.trim()
+        viewModelScope.launch {
+            val existing = container.profileRepository.profiles
+                .first()
+                .filter { it.id != _state.value.id }
+                .map { it.name }
+                .toSet()
+            if (name.isEmpty()) {
+                update { s ->
+                    s.copy(
+                        saveDialog = dialog.copy(
+                            message = "The profile needs a name. A free suggestion is filled in below.",
+                            nameTaken = true,
+                            nameText = suggestedProfileName(existing),
+                        ),
+                    )
+                }
+                return@launch
+            }
+            if (name in existing) {
+                update { s ->
+                    s.copy(
+                        saveDialog = dialog.copy(
+                            message = "\"$name\" is already used by another profile. A free suggestion is filled in below.",
+                            nameTaken = true,
+                            nameText = suggestedProfileName(existing + name),
+                        ),
+                    )
+                }
+                return@launch
+            }
+            update { s -> s.copy(name = name, saveDialog = null) }
+            when (val attempt = validateDraft(draft(_state.value), existing)) {
+                is SaveAttempt.Failure ->
+                    update { s ->
+                        s.copy(saveDialog = SaveDialogUiState(attempt.message, attempt.needsNameDialog, attempt.suggestedName ?: ""))
+                    }
+                is SaveAttempt.Success -> persist(attempt.profile, onSaved)
+            }
+        }
+    }
+
+    private suspend fun persist(profile: Profile, onSaved: () -> Unit) {
+        container.profileRepository.save(profile)
+        onSaved()
+    }
+
+    private fun draft(s: UiState): ProfileDraft = ProfileDraft(
+        id = s.id,
+        name = s.name,
+        geofenceMode = s.geofenceMode,
+        centerLatText = s.centerLatText,
+        centerLonText = s.centerLonText,
+        radiusKm = s.radiusKm,
+        polygon = s.polygon,
+        ceilingText = s.ceilingValueText,
+        altitudeUnit = s.altitudeUnit,
+        ceilingRef = s.ceilingRef,
+        terrainText = s.terrainText,
+        watchEnabled = s.watchEnabled,
+        watchMode = s.watchMode,
+        watchRadiusKm = s.watchRadiusKm,
+        watchCenterLatText = s.watchCenterLatText,
+        watchCenterLonText = s.watchCenterLonText,
+        watchPolygon = s.watchPolygon,
+        watchCeilingText = s.watchCeilingText,
+        watchCeilingRef = s.watchCeilingRef,
+        watchOffsetHkm = s.watchOffsetHkm,
+        watchOffsetVText = s.watchOffsetVText,
+        pollIntervalSec = s.pollIntervalSec,
+        cooldownMin = s.cooldownMin,
+        soundEnabled = s.soundEnabled,
+        vibrationEnabled = s.vibrationEnabled,
+        warningVoiceEnabled = s.warningVoiceEnabled,
+        watchVoiceEnabled = s.watchVoiceEnabled,
+    )
+
+    private fun toDisplayText(ft: Double, unit: AltitudeUnit): String {
+        val display = when (unit) {
+            AltitudeUnit.FT -> ft
+            AltitudeUnit.M -> Units.feetToMeters(ft)
+        }
+        val rounded = Math.round(display).toDouble()
+        return if (Math.abs(display - rounded) < 1e-9) {
+            rounded.toInt().toString()
+        } else {
+            String.format(java.util.Locale.US, "%.1f", display)
+        }
+    }
+
+    private fun defaultDisplayTexts(unit: AltitudeUnit): Triple<String, String, String> =
+        Triple(
+            toDisplayText(400.0, unit),
+            toDisplayText(1500.0, unit),
+            toDisplayText(300.0, unit),
+        )
 }
